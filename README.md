@@ -3,6 +3,7 @@
 KAI is an AI-powered RAG (Retrieval-Augmented Generation) chatbot built using FastAPI, React, LangChain, and Google Gemini.
 
 Users can upload PDFs and chat with their documents using semantic retrieval and LLM-powered responses.
+Supports multiple PDFs with independent chat contexts and dynamic document management.
 
 ---
 
@@ -13,15 +14,15 @@ Users can upload PDFs and chat with their documents using semantic retrieval and
 
 # Features
 
-* PDF upload and processing
-* RAG-based document querying
-* Semantic search using embeddings
-* Google Gemini integration
-* FastAPI backend
-* React + Vite frontend
-* Modular backend architecture
-* Conversational chat interface
-
+- Multi-PDF upload support
+- Separate chat sessions for each PDF
+- PDF deletion functionality
+- RAG-based document querying
+- Semantic search using embeddings
+- Google Gemini LLM integration
+- FastAPI backend architecture
+- React + Vite frontend
+- Context-aware conversational responses
 ---
 
 # Tech Stack
@@ -105,18 +106,21 @@ http://localhost:5173
 # Workflow
 
 ```text
-PDF Upload → Text Chunking → Embeddings → Vector Retrieval → Gemini Response
+Upload PDFs → Text Chunking → Embeddings → Vector Storage
+        ↓
+Select PDF Chat Session → Semantic Retrieval → Gemini Response
 ```
 
 ---
 
 # Upcoming Features
 
-* Multi-PDF support
-* Persistent chat sessions
-* Streaming responses
-* Cloud deployment
-* Advanced vector database integration
+- Persistent chat history
+- Streaming AI responses
+- Authentication system
+- Cloud deployment
+- Advanced vector database integration
+- Multi-modal document support
 
 ---
 
