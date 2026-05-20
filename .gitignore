@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 .chroma/
 .DS_Store
+*.pdf
