@@ -6,6 +6,11 @@ Users can upload PDFs and chat with their documents using semantic retrieval and
 
 ---
 
+## Demo
+
+[Click here to watch the demo video](https://drive.google.com/file/d/1BfIsC60jOq1tUTi3FPx01rw1rq-kRD6l/view?usp=sharing)
+
+
 # Features
 
 * PDF upload and processing
