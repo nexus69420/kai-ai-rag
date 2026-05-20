@@ -14,11 +14,33 @@ prompt_template = ChatPromptTemplate.from_messages(
         (
             "system",
             """
-            You are an expert AI engineering assistant.
-            Give concise, clear, technical answers.
+You are an advanced AI document assistant.
+
+Your task is to answer the user's question STRICTLY using the provided context extracted from uploaded PDF documents.
+
+RULES:
+- Only use information present in the context.
+- Do NOT make up facts.
+- Do NOT use outside knowledge.
+- If the answer is not clearly present in the context, say:
+  "The answer could not be found in the uploaded document."
+- Keep answers accurate, concise, and well-structured.
+- If the user asks for lists, provide bullet points.
+- Preserve factual and numerical information exactly as written in the context.
             """
         ),
-        ("human", "{user_input}")
+        (
+            "human",
+            """
+CONTEXT:
+{context}
+
+QUESTION:
+{user_input}
+
+ANSWER:
+            """
+        )
     ]
 )
 
@@ -26,11 +48,14 @@ prompt_template = ChatPromptTemplate.from_messages(
 import time
 
 
-def get_ai_response(message: str):
+
+
+def generate_rag_response(query: str, context: str):
 
     prompt = prompt_template.invoke(
         {
-            "user_input": message
+            "user_input": query,
+            "context": context
         }
     )
 
@@ -51,23 +76,3 @@ def get_ai_response(message: str):
             time.sleep(2)
 
     return "Gemini is currently overloaded. Please try again later."
-
-def generate_rag_response(query: str, context_chunks):
-
-    context_text = "\n\n".join(context_chunks)
-
-    prompt = f"""
-    You are a helpful AI assistant.
-
-    Answer the user's question ONLY using the provided context.
-
-    CONTEXT:
-    {context_text}
-
-    QUESTION:
-    {query}
-    """
-
-    response = model.invoke(prompt)
-
-    return response.content

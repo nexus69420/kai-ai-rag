@@ -6,6 +6,8 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 from qdrant_client.models import PointStruct
 from langchain_community.embeddings import HuggingFaceEmbeddings
+import uuid
+from qdrant_client.models import Filter, FieldCondition, MatchValue
 load_dotenv()
 
 embedding_model = HuggingFaceEmbeddings(
@@ -30,7 +32,7 @@ def create_collection():
         )
 
 
-def store_chunks(chunks):
+def store_chunks(chunks, document_id):
 
     print("TOTAL CHUNKS:", len(chunks))
 
@@ -43,10 +45,12 @@ def store_chunks(chunks):
     for index, vector in enumerate(vectors):
 
         point = PointStruct(
-            id=index,
+            id=str(uuid.uuid4()),
             vector=vector,
             payload={
-                "text": chunks[index]
+                "text": chunks[index],
+                "document_id": document_id
+
             }
         )
 
@@ -59,14 +63,25 @@ def store_chunks(chunks):
 
     print("STORED SUCCESSFULLY")
 
-def search_chunks(query: str):
+def search_chunks(query: str, document_id: str):
 
     query_vector = embedding_model.embed_query(query)
 
+    
     search_results = client.query_points(
         collection_name=COLLECTION_NAME,
         query=query_vector,
-        limit=3
+        limit=5,
+
+        query_filter=Filter(
+            must=[
+                FieldCondition(
+                    key="document_id",
+                    match=MatchValue(value=document_id)
+                )
+            ]
+        )
+
     ).points
 
     

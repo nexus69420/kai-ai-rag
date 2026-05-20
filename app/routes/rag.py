@@ -12,7 +12,7 @@ router = APIRouter()
 
 def rag_chat(request: ChatRequest):
 
-    search_results = search_chunks(request.message)
+    search_results = search_chunks(request.message, request.document_id)
 
     retrieved_chunks = []
 
@@ -22,9 +22,11 @@ def rag_chat(request: ChatRequest):
             result.payload["text"]
         )
 
+    context = "\n\n".join(retrieved_chunks)
+
     ai_response = generate_rag_response(
         request.message,
-        retrieved_chunks
+        context
     )
 
     return {
