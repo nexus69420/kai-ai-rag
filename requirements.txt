@@ -1,0 +1,39 @@
+# =========================
+# FASTAPI BACKEND
+# =========================
+fastapi
+uvicorn
+python-dotenv
+python-multipart
+
+
+# =========================
+# LANGCHAIN + GEMINI
+# =========================
+langchain
+langchain-google-genai
+
+
+# =========================
+# PDF PROCESSING
+# =========================
+pypdf
+
+
+# =========================
+# TEXT CHUNKING
+# =========================
+langchain-text-splitters
+
+
+# =========================
+# VECTOR DATABASE
+# =========================
+qdrant-client
+
+
+# =========================
+# EMBEDDINGS
+# =========================
+langchain-community
+sentence-transformers
