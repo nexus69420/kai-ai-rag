@@ -2,6 +2,8 @@ import { GoogleGenAI } from "@google/genai";
 
 import { EMBEDDING_DIM } from "./qdrant";
 
+export { formatGeminiError } from "./gemini-errors";
+
 export function resolveApiKey(clientKey?: string | null) {
   const key = clientKey?.trim() || process.env.GOOGLE_API_KEY?.trim();
   if (!key) {

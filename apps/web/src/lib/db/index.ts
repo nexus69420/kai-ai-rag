@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS documents (
   chunk_count integer NOT NULL DEFAULT 0,
   status varchar(32) NOT NULL DEFAULT 'processing',
   storage_path text,
+  file_bytes text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS chunks (
@@ -111,6 +112,9 @@ export async function ensureSchema() {
       await client.exec(
         `ALTER TABLE chats ADD COLUMN IF NOT EXISTS document_ids jsonb DEFAULT '[]'::jsonb`,
       );
+      await client.exec(
+        `ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_bytes text`,
+      );
     } catch {
       // ignore
     }
@@ -123,6 +127,9 @@ export async function ensureSchema() {
   await sql.unsafe(SCHEMA_SQL);
   await sql.unsafe(
     `ALTER TABLE chats ADD COLUMN IF NOT EXISTS document_ids jsonb DEFAULT '[]'::jsonb`,
+  );
+  await sql.unsafe(
+    `ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_bytes text`,
   );
 }
 

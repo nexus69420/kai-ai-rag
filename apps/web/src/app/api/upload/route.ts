@@ -1,6 +1,3 @@
-import { mkdir, writeFile } from "fs/promises";
-import path from "path";
-
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { v4 as uuidv4 } from "uuid";
@@ -8,11 +5,12 @@ import { v4 as uuidv4 } from "uuid";
 import { chunkPages } from "@/lib/chunk";
 import { ensureSchema, getDb } from "@/lib/db";
 import { chunks, documents } from "@/lib/db/schema";
-import { embedTexts, resolveApiKey } from "@/lib/gemini";
+import { embedTexts, resolveApiKey, formatGeminiError } from "@/lib/gemini";
 import { getOrCreateGuestId } from "@/lib/guest";
 import { extractPdfPages } from "@/lib/pdf";
 import { upsertChunkVectors } from "@/lib/qdrant";
 import { rateLimit } from "@/lib/rate-limit";
+import { useDbPdfStorage, writePdfToDisk } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -46,6 +44,17 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "PDF must be under 20MB." }, { status: 400 });
   }
 
+  // Vercel serverless request body limit is ~4.5MB on Hobby/Pro defaults.
+  if (process.env.VERCEL && file.size > 4.5 * 1024 * 1024) {
+    return NextResponse.json(
+      {
+        error:
+          "On this hosted deploy, PDFs must be under 4.5MB. Try a smaller PDF or run locally.",
+      },
+      { status: 413 },
+    );
+  }
+
   let apiKey: string;
   try {
     apiKey = resolveApiKey(apiKeyHeader);
@@ -60,10 +69,13 @@ export async function POST(request: Request) {
   const documentId = uuidv4();
   const db = getDb();
 
-  const uploadDir = path.join(process.cwd(), "uploads", guestId);
-  await mkdir(uploadDir, { recursive: true });
-  const storagePath = path.join(uploadDir, `${documentId}.pdf`);
-  await writeFile(storagePath, buffer);
+  let storagePath: string | null = null;
+  let fileBytes: string | null = null;
+  if (useDbPdfStorage()) {
+    fileBytes = buffer.toString("base64");
+  } else {
+    storagePath = await writePdfToDisk(guestId, documentId, buffer);
+  }
 
   await db.insert(documents).values({
     id: documentId,
@@ -72,6 +84,7 @@ export async function POST(request: Request) {
     chunkCount: 0,
     status: "processing",
     storagePath,
+    fileBytes,
   });
 
   try {
@@ -131,10 +144,7 @@ export async function POST(request: Request) {
 
     console.error("Upload failed", error);
     return NextResponse.json(
-      {
-        error:
-          error instanceof Error ? error.message : "Failed to index PDF",
-      },
+      { error: formatGeminiError(error) },
       { status: 500 },
     );
   }

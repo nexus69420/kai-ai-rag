@@ -1,11 +1,10 @@
-import { readFile } from "fs/promises";
-
 import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
 import { getDb } from "@/lib/db";
 import { documents } from "@/lib/db/schema";
 import { getOrCreateGuestId } from "@/lib/guest";
+import { readStoredPdf } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,20 +22,24 @@ export async function GET(_request: Request, { params }: Params) {
     .where(and(eq(documents.id, id), eq(documents.guestId, guestId)))
     .limit(1);
 
-  if (!doc?.storagePath) {
+  if (!doc) {
     return NextResponse.json({ error: "PDF not found." }, { status: 404 });
   }
 
-  try {
-    const data = await readFile(doc.storagePath);
-    return new NextResponse(data, {
-      headers: {
-        "content-type": "application/pdf",
-        "content-disposition": `inline; filename="${doc.filename}"`,
-        "cache-control": "private, max-age=3600",
-      },
-    });
-  } catch {
-    return NextResponse.json({ error: "PDF file missing on disk." }, { status: 404 });
+  const data = await readStoredPdf({
+    storagePath: doc.storagePath,
+    fileBytes: doc.fileBytes,
+  });
+
+  if (!data) {
+    return NextResponse.json({ error: "PDF file missing." }, { status: 404 });
   }
+
+  return new NextResponse(new Uint8Array(data), {
+    headers: {
+      "content-type": "application/pdf",
+      "content-disposition": `inline; filename="${doc.filename}"`,
+      "cache-control": "private, max-age=3600",
+    },
+  });
 }

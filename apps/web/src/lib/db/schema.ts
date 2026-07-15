@@ -18,6 +18,8 @@ export const documents = pgTable("documents", {
   chunkCount: integer("chunk_count").notNull().default(0),
   status: varchar("status", { length: 32 }).notNull().default("processing"),
   storagePath: text("storage_path"),
+  /** Base64 PDF bytes for serverless (Vercel has no durable local disk). */
+  fileBytes: text("file_bytes"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .$defaultFn(() => new Date()),

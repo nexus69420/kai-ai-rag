@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnswerMarkdown } from "@/components/answer-markdown";
 import { SourcesPanel } from "@/components/sources-panel";
 import type { SourcePayload } from "@/lib/db/schema";
+import { formatGeminiError } from "@/lib/gemini-errors";
 import {
   defaultSettings,
   loadSettings,
@@ -258,7 +259,7 @@ export function ChatWorkspace() {
       setStatus(`Indexed ${data.total_chunks} chunks`);
       await refreshDocs();
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Upload failed");
+      setStatus(formatGeminiError(error));
     } finally {
       setUploading(false);
     }
@@ -380,8 +381,7 @@ export function ChatWorkspace() {
             ? {
                 id: m.id,
                 role: "error",
-                content:
-                  error instanceof Error ? error.message : "Something went wrong.",
+                content: formatGeminiError(error),
               }
             : m,
         ),

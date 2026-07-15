@@ -1,12 +1,11 @@
-import { unlink } from "fs/promises";
-
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
 import { getDb, ensureSchema } from "@/lib/db";
 import { documents } from "@/lib/db/schema";
 import { getOrCreateGuestId } from "@/lib/guest";
 import { deleteDocumentVectors } from "@/lib/qdrant";
+import { removeStoredPdf } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,14 +30,7 @@ export async function DELETE(_request: Request, { params }: Params) {
 
   await deleteDocumentVectors(id);
   await db.delete(documents).where(eq(documents.id, id));
-
-  if (doc.storagePath) {
-    try {
-      await unlink(doc.storagePath);
-    } catch {
-      // ignore missing file
-    }
-  }
+  await removeStoredPdf({ storagePath: doc.storagePath });
 
   return NextResponse.json({ ok: true });
 }
@@ -56,7 +48,8 @@ export async function GET(_request: Request, { params }: Params) {
       chunkCount: documents.chunkCount,
       status: documents.status,
       createdAt: documents.createdAt,
-      hasFile: documents.storagePath,
+      storagePath: documents.storagePath,
+      hasFileBytes: sql<boolean>`(${documents.fileBytes} is not null)`,
     })
     .from(documents)
     .where(and(eq(documents.id, id), eq(documents.guestId, guestId)))
@@ -67,7 +60,11 @@ export async function GET(_request: Request, { params }: Params) {
   }
 
   return NextResponse.json({
-    ...doc,
-    hasFile: Boolean(doc.hasFile),
+    id: doc.id,
+    filename: doc.filename,
+    chunkCount: doc.chunkCount,
+    status: doc.status,
+    createdAt: doc.createdAt,
+    hasFile: Boolean(doc.storagePath) || Boolean(doc.hasFileBytes),
   });
 }

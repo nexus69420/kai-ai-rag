@@ -1,197 +1,123 @@
-# KAI — Knowledge Augmented Intelligence
+# KAI
 
-KAI is an open-source RAG workspace: upload PDFs, retrieve page-aware evidence with hybrid search + reranking, and stream grounded answers from Gemini. Bring your own API key, switch models, multi-select documents, and use dark or light mode.
+**Knowledge Augmented Intelligence** is an open-source RAG workspace: upload
+PDFs, retrieve page-aware evidence with hybrid search and Gemini reranking, and
+stream grounded answers. Bring your own API key, switch models, multi-select
+documents, and use dark or light mode.
 
-**Stack:** Next.js (App Router) · Gemini · Postgres / PGlite · Qdrant / local vectors
+**Live site:** [https://kai-ai-rag.vercel.app](https://kai-ai-rag.vercel.app/)
 
-**Repo:** [github.com/nexus69420/kai-ai-rag](https://github.com/nexus69420/kai-ai-rag)
+The live product is a Next.js app backed by Gemini, Postgres, and Qdrant. Local
+dev can run with zero Docker (PGlite + on-disk vectors) if you only want to
+explore the UI and RAG loop.
 
----
+## What KAI does
 
-## Features
+- Upload PDFs, chunk them with page awareness, and chat against your library.
+- Retrieves evidence before every answer (hybrid dense + keyword, RRF fusion,
+  optional Gemini rerank) rather than answering from general model knowledge.
+- Streams answers with citation passages and PDF page preview.
+- Supports multi-document selection (one, several, or all uploads).
+- Remembers guest chats and documents via a simple cookie workspace.
+- Settings for BYOK Gemini key, chat/embedding models, temperature, topK, and
+  rerank.
 
-- Research-desk UI with **dark / light** themes
-- **PDF upload** with page-aware chunking and citations
-- **Hybrid retrieval** (dense + keyword) fused with RRF, then **Gemini reranking**
-- **Streaming** answers with source passages and PDF page preview
-- Multi-document chat (select one, several, or all uploads)
-- Conversational history
-- **Settings**: BYOK Gemini key, model switcher, temperature, topK, rerank toggle
-- Guest cookie workspace (documents, chats, messages)
-- Rate limiting + `/api/health`
-- Local zero-Docker mode or Docker Compose (Postgres + Qdrant)
+## Run locally
 
----
+### Prerequisites
 
-## Architecture
+- Node.js 20 or newer
+- A Gemini API key with access to embedding + chat models (or rely on a server
+  `GOOGLE_API_KEY` fallback)
 
-```text
-Next.js (/ , /chat , /settings)
-        │
-        ├─ POST /api/upload  → parse PDF → chunk → embed → vectors + DB
-        ├─ POST /api/chat    → hybrid retrieve → rerank → stream answer
-        └─ GET  /api/health  → DB + vector store status
-
-Vectors  — Qdrant Cloud / local JSON store
-Postgres — documents, chunks, chats, messages (or PGlite locally)
-```
-
----
-
-## Quick start (local)
-
-### Option A — zero Docker (default)
+### 1. Configure the web app
 
 ```bash
 git clone https://github.com/nexus69420/kai-ai-rag.git
-cd kai-ai-rag
-cp .env.example apps/web/.env.local
-cd apps/web
-npm install
-npm run dev
+cd kai-ai-rag/apps/web
+cp ../../.env.example .env.local
 ```
 
-Defaults in `.env.local`:
+Fill in `apps/web/.env.local` (defaults work for fully local mode):
 
 ```env
 DATABASE_URL=pglite
 QDRANT_URL=local
-GOOGLE_API_KEY=optional_server_fallback_key
+GOOGLE_API_KEY=your_gemini_key
 ```
 
-Open [http://localhost:3000](http://localhost:3000) · Chat `/chat` · Settings `/settings`
+These values are server-only. Never commit `.env.local` or expose them with a
+`NEXT_PUBLIC_` prefix. You can also paste the key only in **Settings** in the
+UI (BYOK).
 
-### Option B — Docker Postgres + Qdrant
+### 2. Start KAI
 
 ```bash
-docker compose up -d
-```
-
-```env
-DATABASE_URL=postgresql://kai:kai@localhost:5432/kai
-QDRANT_URL=http://localhost:6333
-QDRANT_COLLECTION=kai_pdf_chunks_v1
-```
-
-```bash
-cd apps/web
-npm run db:apply
+npm install
 npm run dev
 ```
 
-### Health check
+Open [http://localhost:3000](http://localhost:3000). The introduction is at
+`/`; the workspace is at `/chat`; keys and models are at `/settings`.
+
+### 3. Verify the connection (optional)
 
 ```bash
 curl http://localhost:3000/api/health
 ```
 
----
+The response includes database and vector-store status, but never exposes
+credentials.
 
-## Deploy on Vercel
-
-KAI’s Next.js app lives in **`apps/web`**. Serverless needs managed Postgres + Qdrant (PGlite / local vectors are for local only).
-
-### 1. Services
-
-1. **Postgres** — create a free DB on [Neon](https://neon.tech) (or Supabase) and copy the connection string  
-2. **Qdrant** — create a free cluster on [Qdrant Cloud](https://cloud.qdrant.io/) and copy URL + API key  
-
-### 2. Import the GitHub repo
-
-1. Go to [vercel.com/new](https://vercel.com/new)  
-2. Import `nexus69420/kai-ai-rag`  
-3. Set **Root Directory** to `apps/web`  
-4. Framework: Next.js (auto)  
-
-### 3. Environment variables (Production)
-
-| Name | Value |
-|------|--------|
-| `DATABASE_URL` | Neon / Postgres connection string |
-| `QDRANT_URL` | Qdrant Cloud URL |
-| `QDRANT_API_KEY` | Qdrant Cloud API key |
-| `QDRANT_COLLECTION` | `kai_pdf_chunks_v1` |
-| `GOOGLE_API_KEY` | Optional server fallback (prefer user BYOK in Settings) |
-| `RATE_LIMIT_PER_MINUTE` | `30` (optional) |
-
-### 4. Deploy
-
-Click **Deploy**. After the first deploy, open `/api/health` to confirm DB + Qdrant are reachable.
-
-On first chat/upload, collections/tables are created automatically where possible. For Postgres schema, you can also run locally against the remote DB:
+### Optional: Docker Postgres + Qdrant
 
 ```bash
-cd apps/web
-DATABASE_URL="your-neon-url" npm run db:apply
+docker compose up -d
 ```
 
-### Notes for Vercel
-
-- Set the Vercel project root to **`apps/web`**
-- Uploaded PDF files on disk are ephemeral on serverless; chat still works from stored chunks/vectors. Prefer BYOK in Settings for public demos
-- Do not commit `.env` / `.env.local`
-
-### CLI (optional)
+Point `.env.local` at Compose services (see `.env.example`), then:
 
 ```bash
-cd apps/web
-npx vercel
-npx vercel --prod
+npm run db:apply
+npm run dev
 ```
 
----
+## Architecture
 
-## Settings / BYOK
+```text
+Next.js guest workspace (/ , /chat , /settings)
+        │
+        ├─ POST /api/upload  → parse PDF → chunk → embed → vectors + DB
+        └─ POST /api/chat    → hybrid retrieve → rerank → stream answer
+                                    Gemini embedding        Gemini / Gemma
 
-| Setting | Notes |
-|---------|--------|
-| Gemini API key | Browser `localStorage` (`kai.settings.v1`); sent only to API routes |
-| Chat models | `gemini-2.5-flash` (default), `gemini-2.5-pro`, `gemma-3-27b-it` |
-| Embeddings | `gemini-embedding-001` |
-| Rerank | On by default (Gemini scores hybrid hits) |
-| Server fallback | `GOOGLE_API_KEY` only if client key is empty |
+Vectors  — Qdrant Cloud or local JSON store
+Postgres — documents, chunks, chats, messages (or PGlite locally)
+```
 
-Keys are never written to the database.
+## Work in progress
 
----
-
-## API overview
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST` | `/api/upload` | PDF ingest |
-| `POST` | `/api/chat` | Streaming RAG chat |
-| `GET` | `/api/documents` | List documents |
-| `DELETE` | `/api/documents/:id` | Delete doc + vectors |
-| `GET` | `/api/documents/:id/file` | Serve PDF |
-| `GET/POST` | `/api/chats` | List / create chats |
-| `GET/PATCH/DELETE` | `/api/chats/:id` | Chat CRUD |
-| `GET` | `/api/health` | Dependency status |
-
----
+1. **Curated niche library:** ship starter corpora for common study domains.
+2. **Account auth:** sign-in, synced history, optional guest import.
+3. **Durable PDF storage on serverless:** object storage so page preview works
+   reliably after upload on hosted deploys.
+4. **OCR** for scanned PDFs and a retrieval evaluation harness.
 
 ## Repository layout
 
 ```text
-apps/web/          Next.js app (UI + API routes)  ← Vercel root
-docker-compose.yml Local Postgres + Qdrant
-.env.example       Env template
-LEGACY.md          Old FastAPI + Vite notes
+apps/web/          Next.js UI and API routes
+docker-compose.yml Optional local Postgres + Qdrant
+.env.example       Env template (local + hosted)
+LEGACY.md          Older FastAPI + Vite notes
 app/               Legacy FastAPI
 frontend/          Legacy Vite SPA
 ```
 
----
+## Contributing
 
-## Roadmap
-
-- Curated niche document library
-- Account auth + synced history
-- Persistent object storage for PDF previews on Vercel
-- OCR for scanned PDFs
-- Retrieval evaluation harness
-
----
+Issues and pull requests are welcome. Keep API keys and local data out of Git,
+and prefer small focused changes.
 
 ## Author
 

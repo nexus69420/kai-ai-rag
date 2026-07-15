@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import { getDb, ensureSchema } from "@/lib/db";
 import { chats, documents, messages } from "@/lib/db/schema";
-import { streamChatAnswer, resolveApiKey } from "@/lib/gemini";
+import { streamChatAnswer, resolveApiKey, formatGeminiError } from "@/lib/gemini";
 import { getOrCreateGuestId } from "@/lib/guest";
 import { buildUserPrompt, RAG_SYSTEM_PROMPT } from "@/lib/prompt";
 import { rateLimit } from "@/lib/rate-limit";
@@ -165,10 +165,7 @@ export async function POST(request: Request) {
   } catch (error) {
     console.error("Retrieval failed", error);
     return NextResponse.json(
-      {
-        error:
-          error instanceof Error ? error.message : "Retrieval failed",
-      },
+      { error: formatGeminiError(error) },
       { status: 502 },
     );
   }
@@ -223,10 +220,7 @@ export async function POST(request: Request) {
         console.error("Chat stream failed", error);
         send({
           type: "error",
-          error:
-            error instanceof Error
-              ? error.message
-              : "The model stopped while generating an answer.",
+          error: formatGeminiError(error),
         });
       } finally {
         controller.close();
