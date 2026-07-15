@@ -30,6 +30,12 @@ const globalForQdrant = globalThis as unknown as {
 
 function useLocalVectors() {
   const url = process.env.QDRANT_URL ?? "local";
+  if (process.env.VERCEL || process.env.NODE_ENV === "production") {
+    // Local file vectors are not durable on serverless.
+    if (url === "local" || url === "memory" || url.startsWith("local:")) {
+      return false;
+    }
+  }
   return url === "local" || url === "memory" || url.startsWith("local:");
 }
 
@@ -196,6 +202,20 @@ export async function denseSearch(options: {
 
 export async function checkQdrantHealth() {
   try {
+    const url = process.env.QDRANT_URL ?? "";
+    if (
+      (process.env.VERCEL || process.env.NODE_ENV === "production") &&
+      (!url || url === "local" || url === "memory" || url.startsWith("local:"))
+    ) {
+      return {
+        ok: false as const,
+        backend: "qdrant" as const,
+        collection: COLLECTION_NAME,
+        error:
+          "QDRANT_URL is not set for production (use Qdrant Cloud).",
+      };
+    }
+
     if (useLocalVectors()) {
       const map = loadLocal();
       return {
