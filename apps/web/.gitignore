@@ -1,0 +1,7 @@
+uploads
+.data
+.env
+.env.local
+.next
+node_modules
+drizzle/meta

@@ -1,7 +1,17 @@
 venv/
 .env
+.env.local
+apps/web/.env.local
+apps/web/uploads/
+apps/web/.data/
+apps/web/*.log
+apps/web/tsconfig.tsbuildinfo
 __pycache__/
 *.pyc
 .chroma/
 .DS_Store
 *.pdf
+node_modules/
+.next/
+npm-debug.log*
+*.log
