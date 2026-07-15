@@ -27,6 +27,12 @@ function dataDir() {
 
 export function getDbMode(): "postgres" | "pglite" {
   const url = process.env.DATABASE_URL ?? "";
+  // Vercel/serverless cannot use embedded PGlite as a durable DB.
+  if (process.env.VERCEL || process.env.NODE_ENV === "production") {
+    if (!url || url === "pglite" || url.startsWith("pglite:")) {
+      return "postgres";
+    }
+  }
   if (!url || url.startsWith("pglite:") || url === "pglite") return "pglite";
   return "postgres";
 }
@@ -122,13 +128,27 @@ export async function ensureSchema() {
 
 export async function checkDbHealth() {
   try {
+    const url = process.env.DATABASE_URL ?? "";
+    if (
+      (process.env.VERCEL || process.env.NODE_ENV === "production") &&
+      (!url || url === "pglite" || url.startsWith("pglite:"))
+    ) {
+      return {
+        ok: false as const,
+        mode: "postgres" as const,
+        error: "DATABASE_URL is not set for production (use Neon/Postgres).",
+      };
+    }
+
     if (getDbMode() === "pglite") {
       await ensureSchema();
-      const client = globalForDb.kaiPglite ?? new PGlite(path.join(dataDir(), "kai-pglite"));
+      const client =
+        globalForDb.kaiPglite ?? new PGlite(path.join(dataDir(), "kai-pglite"));
       await client.query("select 1");
       return { ok: true as const, mode: "pglite" as const };
     }
-    const sql = globalForDb.kaiSql ?? postgres(process.env.DATABASE_URL!, { max: 1 });
+    const sql =
+      globalForDb.kaiSql ?? postgres(process.env.DATABASE_URL!, { max: 1 });
     await sql`select 1`;
     if (!globalForDb.kaiSql) await sql.end({ timeout: 1 });
     return { ok: true as const, mode: "postgres" as const };
