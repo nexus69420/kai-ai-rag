@@ -57,60 +57,67 @@ export function getDb() {
   return globalForDb.kaiDb;
 }
 
+const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS documents (
+  id uuid PRIMARY KEY,
+  guest_id varchar(64) NOT NULL,
+  filename text NOT NULL,
+  chunk_count integer NOT NULL DEFAULT 0,
+  status varchar(32) NOT NULL DEFAULT 'processing',
+  storage_path text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS chunks (
+  id uuid PRIMARY KEY,
+  document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  guest_id varchar(64) NOT NULL,
+  chunk_index integer NOT NULL,
+  page integer NOT NULL DEFAULT 1,
+  text text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS chats (
+  id uuid PRIMARY KEY,
+  guest_id varchar(64) NOT NULL,
+  title text NOT NULL DEFAULT 'New chat',
+  document_id uuid REFERENCES documents(id) ON DELETE SET NULL,
+  document_ids jsonb DEFAULT '[]'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS messages (
+  id uuid PRIMARY KEY,
+  chat_id uuid NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+  role varchar(16) NOT NULL,
+  content text NOT NULL,
+  sources jsonb DEFAULT '[]'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+`;
+
 export async function ensureSchema() {
   const mode = getDbMode();
   if (mode === "pglite") {
-    const db = getDb() as ReturnType<typeof drizzlePglite>;
-    // PGlite executes via client
+    getDb();
     const client = globalForDb.kaiPglite!;
-    await client.exec(`
-      CREATE TABLE IF NOT EXISTS documents (
-        id uuid PRIMARY KEY,
-        guest_id varchar(64) NOT NULL,
-        filename text NOT NULL,
-        chunk_count integer NOT NULL DEFAULT 0,
-        status varchar(32) NOT NULL DEFAULT 'processing',
-        storage_path text,
-        created_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS chunks (
-        id uuid PRIMARY KEY,
-        document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-        guest_id varchar(64) NOT NULL,
-        chunk_index integer NOT NULL,
-        page integer NOT NULL DEFAULT 1,
-        text text NOT NULL,
-        created_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS chats (
-        id uuid PRIMARY KEY,
-        guest_id varchar(64) NOT NULL,
-        title text NOT NULL DEFAULT 'New chat',
-        document_id uuid REFERENCES documents(id) ON DELETE SET NULL,
-        document_ids jsonb DEFAULT '[]'::jsonb,
-        created_at timestamptz NOT NULL DEFAULT now(),
-        updated_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS messages (
-        id uuid PRIMARY KEY,
-        chat_id uuid NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
-        role varchar(16) NOT NULL,
-        content text NOT NULL,
-        sources jsonb DEFAULT '[]'::jsonb,
-        created_at timestamptz NOT NULL DEFAULT now()
-      );
-    `);
-    // Migrate older local DBs that predate document_ids.
+    await client.exec(SCHEMA_SQL);
     try {
       await client.exec(
         `ALTER TABLE chats ADD COLUMN IF NOT EXISTS document_ids jsonb DEFAULT '[]'::jsonb`,
       );
     } catch {
-      // ignore if already present / unsupported
+      // ignore
     }
-    void db;
     return;
   }
+
+  getDb();
+  const sql = globalForDb.kaiSql!;
+  await sql`CREATE EXTENSION IF NOT EXISTS pgcrypto`;
+  await sql.unsafe(SCHEMA_SQL);
+  await sql.unsafe(
+    `ALTER TABLE chats ADD COLUMN IF NOT EXISTS document_ids jsonb DEFAULT '[]'::jsonb`,
+  );
 }
 
 export async function checkDbHealth() {
