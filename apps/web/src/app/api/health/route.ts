@@ -32,14 +32,31 @@ export async function GET() {
     },
     // Counts only; never the keys themselves.
     apiKeys: keyPoolStatus(),
-    hints:
-      !db.ok || !qdrant.ok
-        ? [
-            "Set DATABASE_URL (Neon/Postgres) in the project env",
-            "Set QDRANT_URL + QDRANT_API_KEY (Qdrant Cloud) in the project env",
-            "Redeploy after saving env vars",
-          ]
-        : undefined,
+    hints: !db.ok || !qdrant.ok ? buildHints(db.ok, qdrant) : undefined,
     timestamp: new Date().toISOString(),
   });
+}
+
+function buildHints(
+  dbOk: boolean,
+  qdrant: Awaited<ReturnType<typeof checkQdrantHealth>>,
+) {
+  const hints: string[] = [];
+  if (!dbOk) {
+    hints.push("Set DATABASE_URL (Neon/Postgres) in the project env");
+  }
+  if (!qdrant.ok) {
+    const err = "error" in qdrant ? String(qdrant.error) : "";
+    if (/wake|recreate|not found|404/i.test(err)) {
+      hints.push(
+        "Wake or recreate the Qdrant Cloud cluster, then update QDRANT_URL / QDRANT_API_KEY if the endpoint changed",
+      );
+    } else {
+      hints.push(
+        "Set QDRANT_URL + QDRANT_API_KEY (Qdrant Cloud) in the project env",
+      );
+    }
+  }
+  hints.push("Redeploy after saving env vars");
+  return hints;
 }

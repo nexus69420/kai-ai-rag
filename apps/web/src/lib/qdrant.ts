@@ -304,25 +304,33 @@ export async function checkQdrantHealth() {
       };
     }
     const client = getQdrant();
-    const collections = await client.getCollections();
-    const match = collections.collections.find((c) => c.name === COLLECTION_NAME);
-    let points = 0;
-    if (match) {
-      const info = await client.getCollection(COLLECTION_NAME);
-      points = info.points_count ?? 0;
-    }
+    // Prove the cluster is reachable first. A free-tier cluster that was
+    // paused or deleted returns 404 here — that is not something we can heal
+    // from code; it needs a wake/recreate in the Qdrant Cloud dashboard.
+    await client.getCollections();
+
+    // Collection may have been wiped while the cluster slept. Recreate it so
+    // the next upload does not fail, and so health reports healthy again.
+    await ensureCollection();
+    const info = await client.getCollection(COLLECTION_NAME);
     return {
       ok: true as const,
       backend: "qdrant" as const,
       collection: COLLECTION_NAME,
-      points,
+      points: info.points_count ?? 0,
     };
   } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Qdrant unreachable";
+    const looksGone =
+      /not found|404|ENOTFOUND|ECONNREFUSED|fetch failed/i.test(message);
     return {
       ok: false as const,
       backend: localVectorMode() ? ("local" as const) : ("qdrant" as const),
       collection: COLLECTION_NAME,
-      error: error instanceof Error ? error.message : "Qdrant unreachable",
+      error: looksGone
+        ? `${message}. If this is Qdrant Cloud free tier, wake or recreate the cluster in the dashboard, then update QDRANT_URL / QDRANT_API_KEY on Vercel if the endpoint changed.`
+        : message,
     };
   }
 }
