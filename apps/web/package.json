@@ -1,17 +1,24 @@
 {
   "name": "kai-web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "db:apply": "tsx scripts/apply-schema.ts"
+    "db:apply": "tsx scripts/apply-schema.ts",
+    "seed": "tsx scripts/seed.ts",
+    "eval": "tsx eval/run.ts",
+    "eval:chunking": "tsx eval/compare-chunking.ts",
+    "eval:retrieval": "tsx eval/compare-retrieval.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.4",
@@ -19,9 +26,7 @@
     "@qdrant/js-client-rest": "^1.15.0",
     "drizzle-orm": "^0.44.4",
     "katex": "^0.16.22",
-    "minisearch": "^7.1.2",
     "next": "16.2.10",
-    "pdf-parse": "^1.1.1",
     "postgres": "^3.4.7",
     "react": "19.2.4",
     "react-dom": "19.2.4",
@@ -35,7 +40,6 @@
   },
   "devDependencies": {
     "@types/node": "^20",
-    "@types/pdf-parse": "^1.1.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/uuid": "^10.0.0",
@@ -44,6 +48,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.10",
     "tsx": "^4.20.3",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.4"
   }
 }

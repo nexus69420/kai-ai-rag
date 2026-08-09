@@ -1,19 +1,21 @@
-import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { v4 as uuidv4 } from "uuid";
 
-import { chunkPages } from "@/lib/chunk";
-import { ensureSchema, getDb } from "@/lib/db";
-import { chunks, documents } from "@/lib/db/schema";
-import { embedTexts, resolveApiKey, formatGeminiError } from "@/lib/gemini";
+import { DEFAULT_CHUNK_STRATEGY, isChunkStrategy } from "@/lib/chunking";
+import { ensureSchema } from "@/lib/db";
+import { formatGeminiError, resolveApiKey } from "@/lib/gemini";
 import { getOrCreateGuestId } from "@/lib/guest";
-import { extractPdfPages } from "@/lib/pdf";
-import { upsertChunkVectors } from "@/lib/qdrant";
+import { ingestDocument } from "@/lib/ingest";
+import { detectSourceType, SUPPORTED_EXTENSIONS } from "@/lib/loaders";
 import { rateLimit } from "@/lib/rate-limit";
-import { useDbPdfStorage, writePdfToDisk } from "@/lib/storage";
+import { storeFilesInDb, writeFileToDisk } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const MAX_BYTES = 20 * 1024 * 1024;
+/** Vercel serverless request body limit on Hobby/Pro defaults. */
+const MAX_BYTES_SERVERLESS = 4.5 * 1024 * 1024;
 
 export async function POST(request: Request) {
   await ensureSchema();
@@ -32,24 +34,39 @@ export async function POST(request: Request) {
   const embeddingModel =
     request.headers.get("x-embedding-model") ?? "gemini-embedding-001";
 
+  const requestedStrategy =
+    form.get("chunkStrategy") ?? request.headers.get("x-chunk-strategy");
+  const chunkStrategy = isChunkStrategy(requestedStrategy)
+    ? requestedStrategy
+    : DEFAULT_CHUNK_STRATEGY;
+  const dedupe = form.get("dedupe") !== "false";
+
   if (!(file instanceof File)) {
-    return NextResponse.json({ error: "Missing PDF file." }, { status: 400 });
+    return NextResponse.json({ error: "Missing file." }, { status: 400 });
   }
 
-  if (!file.name.toLowerCase().endsWith(".pdf")) {
-    return NextResponse.json({ error: "Only PDF files are supported." }, { status: 400 });
+  const sourceType = detectSourceType(file.name);
+  if (!sourceType) {
+    return NextResponse.json(
+      {
+        error: `Unsupported file type. Supported: ${SUPPORTED_EXTENSIONS.join(", ")}`,
+      },
+      { status: 400 },
+    );
   }
 
-  if (file.size > 20 * 1024 * 1024) {
-    return NextResponse.json({ error: "PDF must be under 20MB." }, { status: 400 });
+  if (file.size > MAX_BYTES) {
+    return NextResponse.json(
+      { error: "File must be under 20MB." },
+      { status: 413 },
+    );
   }
 
-  // Vercel serverless request body limit is ~4.5MB on Hobby/Pro defaults.
-  if (process.env.VERCEL && file.size > 4.5 * 1024 * 1024) {
+  if (process.env.VERCEL && file.size > MAX_BYTES_SERVERLESS) {
     return NextResponse.json(
       {
         error:
-          "On this hosted deploy, PDFs must be under 4.5MB. Try a smaller PDF or run locally.",
+          "On this hosted deploy, uploads must be under 4.5MB. Try a smaller file or run locally.",
       },
       { status: 413 },
     );
@@ -67,81 +84,48 @@ export async function POST(request: Request) {
 
   const buffer = Buffer.from(await file.arrayBuffer());
   const documentId = uuidv4();
-  const db = getDb();
 
   let storagePath: string | null = null;
   let fileBytes: string | null = null;
-  if (useDbPdfStorage()) {
+  if (storeFilesInDb()) {
     fileBytes = buffer.toString("base64");
   } else {
-    storagePath = await writePdfToDisk(guestId, documentId, buffer);
+    storagePath = await writeFileToDisk({
+      guestId,
+      documentId,
+      buffer,
+      sourceType,
+    });
   }
 
-  await db.insert(documents).values({
-    id: documentId,
-    guestId,
-    filename: file.name,
-    chunkCount: 0,
-    status: "processing",
-    storagePath,
-    fileBytes,
-  });
-
   try {
-    const pages = await extractPdfPages(buffer);
-    const textChunks = chunkPages(pages);
-    if (!textChunks.length) {
-      throw new Error("No text chunks produced from PDF.");
-    }
-
-    const vectors = await embedTexts(
-      textChunks.map((c) => c.text),
-      { apiKey, model: embeddingModel },
-    );
-
-    const chunkRows = textChunks.map((chunk) => ({
-      id: uuidv4(),
-      documentId,
+    const result = await ingestDocument({
       guestId,
-      chunkIndex: chunk.chunkIndex,
-      page: chunk.page,
-      text: chunk.text,
-    }));
-
-    await db.insert(chunks).values(chunkRows);
-
-    await upsertChunkVectors(
-      chunkRows.map((row, index) => ({
-        id: row.id,
-        vector: vectors[index],
-        payload: {
-          text: row.text,
-          document_id: documentId,
-          guest_id: guestId,
-          filename: file.name,
-          page: row.page,
-          chunk_index: row.chunkIndex,
-        },
-      })),
-    );
-
-    await db
-      .update(documents)
-      .set({ chunkCount: chunkRows.length, status: "ready" })
-      .where(eq(documents.id, documentId));
+      documentId,
+      filename: file.name,
+      buffer,
+      apiKey,
+      embeddingModel,
+      chunkStrategy,
+      dedupe,
+      storagePath,
+      fileBytes,
+    });
 
     return NextResponse.json({
-      document_id: documentId,
-      filename: file.name,
-      total_chunks: chunkRows.length,
-      message: "PDF indexed successfully",
+      document_id: result.documentId,
+      filename: result.filename,
+      source_type: result.sourceType,
+      chunk_strategy: result.chunkStrategy,
+      total_chunks: result.totalChunks,
+      duplicate_chunks: result.duplicateChunks,
+      pages: result.pageCount,
+      message:
+        result.duplicateChunks > 0
+          ? `Indexed ${result.totalChunks} chunks, skipped ${result.duplicateChunks} duplicates`
+          : `Indexed ${result.totalChunks} chunks`,
     });
   } catch (error) {
-    await db
-      .update(documents)
-      .set({ status: "failed" })
-      .where(eq(documents.id, documentId));
-
     console.error("Upload failed", error);
     return NextResponse.json(
       { error: formatGeminiError(error) },

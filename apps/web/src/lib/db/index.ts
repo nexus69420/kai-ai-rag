@@ -7,6 +7,7 @@ import { drizzle as drizzlePostgres } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 
 import * as schema from "./schema";
+import { applySchemaWith } from "./sql";
 
 type AppDb =
   | ReturnType<typeof drizzlePostgres<typeof schema>>
@@ -63,74 +64,30 @@ export function getDb() {
   return globalForDb.kaiDb;
 }
 
-const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS documents (
-  id uuid PRIMARY KEY,
-  guest_id varchar(64) NOT NULL,
-  filename text NOT NULL,
-  chunk_count integer NOT NULL DEFAULT 0,
-  status varchar(32) NOT NULL DEFAULT 'processing',
-  storage_path text,
-  file_bytes text,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS chunks (
-  id uuid PRIMARY KEY,
-  document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-  guest_id varchar(64) NOT NULL,
-  chunk_index integer NOT NULL,
-  page integer NOT NULL DEFAULT 1,
-  text text NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS chats (
-  id uuid PRIMARY KEY,
-  guest_id varchar(64) NOT NULL,
-  title text NOT NULL DEFAULT 'New chat',
-  document_id uuid REFERENCES documents(id) ON DELETE SET NULL,
-  document_ids jsonb DEFAULT '[]'::jsonb,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS messages (
-  id uuid PRIMARY KEY,
-  chat_id uuid NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
-  role varchar(16) NOT NULL,
-  content text NOT NULL,
-  sources jsonb DEFAULT '[]'::jsonb,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-`;
+let schemaReady: Promise<void> | null = null;
 
-export async function ensureSchema() {
-  const mode = getDbMode();
-  if (mode === "pglite") {
+async function applySchema() {
+  if (getDbMode() === "pglite") {
     getDb();
     const client = globalForDb.kaiPglite!;
-    await client.exec(SCHEMA_SQL);
-    try {
-      await client.exec(
-        `ALTER TABLE chats ADD COLUMN IF NOT EXISTS document_ids jsonb DEFAULT '[]'::jsonb`,
-      );
-      await client.exec(
-        `ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_bytes text`,
-      );
-    } catch {
-      // ignore
-    }
+    await applySchemaWith((statement) => client.exec(statement));
     return;
   }
 
   getDb();
   const sql = globalForDb.kaiSql!;
   await sql`CREATE EXTENSION IF NOT EXISTS pgcrypto`;
-  await sql.unsafe(SCHEMA_SQL);
-  await sql.unsafe(
-    `ALTER TABLE chats ADD COLUMN IF NOT EXISTS document_ids jsonb DEFAULT '[]'::jsonb`,
-  );
-  await sql.unsafe(
-    `ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_bytes text`,
-  );
+  await applySchemaWith((statement) => sql.unsafe(statement));
+}
+
+export async function ensureSchema() {
+  if (!schemaReady) {
+    schemaReady = applySchema().catch((error) => {
+      schemaReady = null;
+      throw error;
+    });
+  }
+  return schemaReady;
 }
 
 export async function checkDbHealth() {

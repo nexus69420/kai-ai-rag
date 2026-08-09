@@ -15,6 +15,10 @@ export type ChunkPayload = {
   filename: string;
   page: number;
   chunk_index: number;
+  heading?: string | null;
+  chunk_strategy?: string;
+  content_hash?: string;
+  char_count?: number;
 };
 
 type StoredPoint = {
@@ -28,7 +32,7 @@ const globalForQdrant = globalThis as unknown as {
   kaiLocalVectors?: Map<string, StoredPoint>;
 };
 
-function useLocalVectors() {
+function localVectorMode() {
   const url = process.env.QDRANT_URL ?? "local";
   if (process.env.VERCEL || process.env.NODE_ENV === "production") {
     // Local file vectors are not durable on serverless.
@@ -85,7 +89,7 @@ export function getQdrant() {
 }
 
 export async function ensureCollection() {
-  if (useLocalVectors()) {
+  if (localVectorMode()) {
     loadLocal();
     return;
   }
@@ -110,7 +114,7 @@ export async function upsertChunkVectors(
   points: Array<{ id: string; vector: number[]; payload: ChunkPayload }>,
 ) {
   await ensureCollection();
-  if (useLocalVectors()) {
+  if (localVectorMode()) {
     const map = loadLocal();
     for (const point of points) {
       map.set(point.id, point);
@@ -131,7 +135,7 @@ export async function upsertChunkVectors(
 }
 
 export async function deleteDocumentVectors(documentId: string) {
-  if (useLocalVectors()) {
+  if (localVectorMode()) {
     const map = loadLocal();
     for (const [id, point] of map) {
       if (point.payload.document_id === documentId) map.delete(id);
@@ -163,7 +167,7 @@ export async function denseSearch(options: {
     options.documentIds?.filter(Boolean) ??
     (options.documentId ? [options.documentId] : []);
 
-  if (useLocalVectors()) {
+  if (localVectorMode()) {
     const map = loadLocal();
     const scored = [...map.values()]
       .filter((p) => p.payload.guest_id === options.guestId)
@@ -200,6 +204,80 @@ export async function denseSearch(options: {
   return result.points ?? [];
 }
 
+export type ScoredPoint = {
+  id: string;
+  score: number;
+  payload: Partial<ChunkPayload>;
+};
+
+/**
+ * Nearest-neighbour lookup for many vectors at once. Used by ingest-time
+ * deduplication, where one query per candidate chunk would be far too chatty.
+ */
+export async function denseSearchBatch(options: {
+  vectors: number[][];
+  guestId: string;
+  limit: number;
+  excludeDocumentId?: string;
+}): Promise<ScoredPoint[][]> {
+  if (!options.vectors.length) return [];
+  await ensureCollection();
+
+  if (localVectorMode()) {
+    const map = loadLocal();
+    const pool = [...map.values()].filter(
+      (p) =>
+        p.payload.guest_id === options.guestId &&
+        p.payload.document_id !== options.excludeDocumentId,
+    );
+    return options.vectors.map((vector) =>
+      pool
+        .map((p) => ({
+          id: p.id,
+          score: cosine(vector, p.vector),
+          payload: p.payload,
+        }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, options.limit),
+    );
+  }
+
+  const client = getQdrant();
+  const must: Array<Record<string, unknown>> = [
+    { key: "guest_id", match: { value: options.guestId } },
+  ];
+  const must_not = options.excludeDocumentId
+    ? [{ key: "document_id", match: { value: options.excludeDocumentId } }]
+    : [];
+
+  const results: ScoredPoint[][] = [];
+  const BATCH = 32;
+
+  for (let i = 0; i < options.vectors.length; i += BATCH) {
+    const slice = options.vectors.slice(i, i + BATCH);
+    const response = await client.queryBatch(COLLECTION_NAME, {
+      searches: slice.map((vector) => ({
+        query: vector,
+        limit: options.limit,
+        with_payload: true,
+        filter: { must, ...(must_not.length ? { must_not } : {}) },
+      })),
+    });
+
+    for (const item of response) {
+      results.push(
+        (item.points ?? []).map((point) => ({
+          id: String(point.id),
+          score: point.score ?? 0,
+          payload: (point.payload ?? {}) as Partial<ChunkPayload>,
+        })),
+      );
+    }
+  }
+
+  return results;
+}
+
 export async function checkQdrantHealth() {
   try {
     const url = process.env.QDRANT_URL ?? "";
@@ -216,7 +294,7 @@ export async function checkQdrantHealth() {
       };
     }
 
-    if (useLocalVectors()) {
+    if (localVectorMode()) {
       const map = loadLocal();
       return {
         ok: true as const,
@@ -242,7 +320,7 @@ export async function checkQdrantHealth() {
   } catch (error) {
     return {
       ok: false as const,
-      backend: useLocalVectors() ? ("local" as const) : ("qdrant" as const),
+      backend: localVectorMode() ? ("local" as const) : ("qdrant" as const),
       collection: COLLECTION_NAME,
       error: error instanceof Error ? error.message : "Qdrant unreachable",
     };

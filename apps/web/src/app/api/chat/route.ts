@@ -2,18 +2,19 @@ import { and, desc, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { getDb, ensureSchema } from "@/lib/db";
+import { DEFAULT_ABSTAIN_THRESHOLD } from "@/lib/confidence";
+import { ensureSchema, getDb } from "@/lib/db";
 import { chats, documents, messages } from "@/lib/db/schema";
-import { streamChatAnswer, resolveApiKey, formatGeminiError } from "@/lib/gemini";
+import { formatGeminiError, resolveApiKey } from "@/lib/gemini";
 import { getOrCreateGuestId } from "@/lib/guest";
-import { buildUserPrompt, RAG_SYSTEM_PROMPT } from "@/lib/prompt";
+import { runRagPipeline } from "@/lib/pipeline";
 import { rateLimit } from "@/lib/rate-limit";
-import { hybridRetrieve } from "@/lib/retrieve";
+import { RETRIEVAL_MODES } from "@/lib/retrieve";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const chatSchema = z.object({
+export const chatSchema = z.object({
   question: z.string().min(1).max(4000),
   chatId: z.string().uuid().optional().nullable(),
   documentId: z.string().uuid().optional().nullable(),
@@ -24,6 +25,11 @@ const chatSchema = z.object({
   temperature: z.number().min(0).max(1).default(0.4),
   topK: z.number().int().min(1).max(12).default(5),
   rerank: z.boolean().default(true),
+  retrievalMode: z.enum(RETRIEVAL_MODES).default("hybrid"),
+  denseWeight: z.number().min(0).max(1).default(0.7),
+  sparseWeight: z.number().min(0).max(1).default(0.3),
+  verifyCitations: z.boolean().default(true),
+  abstainThreshold: z.number().min(0).max(1).default(DEFAULT_ABSTAIN_THRESHOLD),
   apiKey: z.string().optional(),
 });
 
@@ -54,11 +60,10 @@ export async function POST(request: Request) {
   }
 
   const data = parsed.data;
-  const headerKey = request.headers.get("x-api-key");
 
   let apiKey: string;
   try {
-    apiKey = resolveApiKey(data.apiKey || headerKey);
+    apiKey = resolveApiKey(data.apiKey || request.headers.get("x-api-key"));
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Missing API key" },
@@ -69,12 +74,11 @@ export async function POST(request: Request) {
   const db = getDb();
   const scopeIds = data.scopeAll
     ? []
-    : (data.documentIds?.length
-        ? data.documentIds
-        : data.documentId
-          ? [data.documentId]
-          : []);
-  // Empty scopeIds => search across all guest documents
+    : data.documentIds?.length
+      ? data.documentIds
+      : data.documentId
+        ? [data.documentId]
+        : [];
 
   const docs = await db
     .select()
@@ -83,7 +87,7 @@ export async function POST(request: Request) {
 
   if (!docs.length) {
     return NextResponse.json(
-      { error: "Upload a PDF before chatting." },
+      { error: "Index a document before chatting." },
       { status: 400 },
     );
   }
@@ -117,15 +121,6 @@ export async function POST(request: Request) {
       })
       .returning();
     chatId = created.id;
-  } else {
-    await db
-      .update(chats)
-      .set({
-        documentId: scopeIds[0] ?? null,
-        documentIds: scopeIds,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(chats.id, chatId), eq(chats.guestId, guestId)));
   }
 
   const prior = await db
@@ -150,27 +145,7 @@ export async function POST(request: Request) {
     sources: [],
   });
 
-  let sources;
-  try {
-    sources = await hybridRetrieve({
-      query: data.question,
-      guestId,
-      documentIds: scopeIds.length ? scopeIds : null,
-      apiKey,
-      embeddingModel: data.embeddingModel,
-      topK: data.topK,
-      filenameByDoc,
-      rerank: data.rerank,
-    });
-  } catch (error) {
-    console.error("Retrieval failed", error);
-    return NextResponse.json(
-      { error: formatGeminiError(error) },
-      { status: 502 },
-    );
-  }
-
-  const userPrompt = buildUserPrompt(data.question, sources);
+  const activeChatId = chatId;
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -179,31 +154,42 @@ export async function POST(request: Request) {
         controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
 
       try {
-        send({
-          type: "meta",
-          chatId,
-          sources,
-          model: data.chatModel,
+        const result = await runRagPipeline({
+          question: data.question,
+          guestId,
+          apiKey,
+          filenameByDoc,
+          documentIds: scopeIds.length ? scopeIds : null,
+          history,
+          chatModel: data.chatModel,
+          embeddingModel: data.embeddingModel,
+          temperature: data.temperature,
+          topK: data.topK,
+          rerank: data.rerank,
+          retrievalMode: data.retrievalMode,
+          denseWeight: data.denseWeight,
+          sparseWeight: data.sparseWeight,
+          verifyCitations: data.verifyCitations,
+          abstainThreshold: data.abstainThreshold,
+          onEvent: (event) => {
+            if (event.type === "meta") {
+              send({ ...event, chatId: activeChatId, model: data.chatModel });
+              return;
+            }
+            send(event);
+          },
         });
 
-        let answer = "";
-        for await (const delta of streamChatAnswer({
-          apiKey,
-          model: data.chatModel,
-          temperature: data.temperature,
-          system: RAG_SYSTEM_PROMPT,
-          user: userPrompt,
-          history,
-        })) {
-          answer += delta;
-          send({ type: "delta", text: delta });
-        }
-
         await db.insert(messages).values({
-          chatId: chatId!,
+          chatId: activeChatId,
           role: "assistant",
-          content: answer || "No response generated.",
-          sources,
+          content: result.answer || "No response generated.",
+          sources: result.sources,
+          retrievalMode: result.stats.mode,
+          retrievalStats: result.stats,
+          citations: result.citations,
+          confidence: result.confidence,
+          abstained: result.abstained ? "yes" : "no",
         });
 
         await db
@@ -213,15 +199,12 @@ export async function POST(request: Request) {
             documentId: scopeIds[0] ?? null,
             documentIds: scopeIds,
           })
-          .where(eq(chats.id, chatId!));
+          .where(eq(chats.id, activeChatId));
 
         send({ type: "done" });
       } catch (error) {
         console.error("Chat stream failed", error);
-        send({
-          type: "error",
-          error: formatGeminiError(error),
-        });
+        send({ type: "error", error: formatGeminiError(error) });
       } finally {
         controller.close();
       }

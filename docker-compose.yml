@@ -30,6 +30,58 @@ services:
       timeout: 5s
       retries: 10
 
+  web:
+    build:
+      context: ./apps/web
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://kai:kai@postgres:5432/kai
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-kai_pdf_chunks_v1}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      # Extra keys are optional; requests fail over on quota errors.
+      GOOGLE_API_KEY_2: ${GOOGLE_API_KEY_2:-}
+      GOOGLE_API_KEY_3: ${GOOGLE_API_KEY_3:-}
+      GOOGLE_API_KEY_4: ${GOOGLE_API_KEY_4:-}
+      GOOGLE_API_KEY_5: ${GOOGLE_API_KEY_5:-}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-30}
+      KAI_ENABLE_DEMO: ${KAI_ENABLE_DEMO:-1}
+      KAI_ALLOW_GUEST_HEADER: ${KAI_ALLOW_GUEST_HEADER:-0}
+    ports:
+      - "3000:3000"
+    volumes:
+      - kai_uploads:/app/uploads
+
+  # One-shot: apply schema, then index the eval corpus into the demo workspace
+  # so a fresh clone has something to ask questions about. Needs GOOGLE_API_KEY.
+  #   docker compose run --rm seed
+  seed:
+    build:
+      context: ./apps/web
+      target: tools
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://kai:kai@postgres:5432/kai
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-kai_pdf_chunks_v1}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GOOGLE_API_KEY_2: ${GOOGLE_API_KEY_2:-}
+      GOOGLE_API_KEY_3: ${GOOGLE_API_KEY_3:-}
+      GOOGLE_API_KEY_4: ${GOOGLE_API_KEY_4:-}
+      GOOGLE_API_KEY_5: ${GOOGLE_API_KEY_5:-}
+    command: ["npx", "tsx", "scripts/seed.ts"]
+
 volumes:
   kai_postgres:
   kai_qdrant:
+  kai_uploads:

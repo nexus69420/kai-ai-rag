@@ -4,7 +4,8 @@ import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { documents } from "@/lib/db/schema";
 import { getOrCreateGuestId } from "@/lib/guest";
-import { readStoredPdf } from "@/lib/storage";
+import type { SourceType } from "@/lib/loaders";
+import { CONTENT_TYPES, readStoredFile } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,21 +24,28 @@ export async function GET(_request: Request, { params }: Params) {
     .limit(1);
 
   if (!doc) {
-    return NextResponse.json({ error: "PDF not found." }, { status: 404 });
+    return NextResponse.json({ error: "Document not found." }, { status: 404 });
   }
 
-  const data = await readStoredPdf({
+  const data = await readStoredFile({
     storagePath: doc.storagePath,
     fileBytes: doc.fileBytes,
   });
 
   if (!data) {
-    return NextResponse.json({ error: "PDF file missing." }, { status: 404 });
+    return NextResponse.json(
+      { error: "Original file is no longer available." },
+      { status: 404 },
+    );
   }
+
+  const contentType =
+    CONTENT_TYPES[(doc.sourceType as SourceType) ?? "pdf"] ??
+    "application/octet-stream";
 
   return new NextResponse(new Uint8Array(data), {
     headers: {
-      "content-type": "application/pdf",
+      "content-type": contentType,
       "content-disposition": `inline; filename="${doc.filename}"`,
       "cache-control": "private, max-age=3600",
     },

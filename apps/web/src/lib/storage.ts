@@ -2,28 +2,38 @@ import { mkdir, readFile, unlink, writeFile } from "fs/promises";
 import os from "os";
 import path from "path";
 
+import { FILE_EXTENSIONS, type SourceType } from "./formats";
+
+export { CONTENT_TYPES } from "./formats";
+
 /** Prefer durable DB blobs on serverless; local disk only when writable. */
-export function useDbPdfStorage() {
+export function storeFilesInDb() {
   return Boolean(process.env.VERCEL) || process.env.KAI_PDF_STORAGE === "db";
 }
 
-export async function writePdfToDisk(
-  guestId: string,
-  documentId: string,
-  buffer: Buffer,
-): Promise<string> {
+export async function writeFileToDisk(options: {
+  guestId: string;
+  documentId: string;
+  buffer: Buffer;
+  sourceType: SourceType;
+}): Promise<string> {
   const root =
     process.env.VERCEL || process.env.KAI_PDF_STORAGE === "tmp"
       ? path.join(os.tmpdir(), "kai-uploads")
       : path.join(process.cwd(), "uploads");
-  const uploadDir = path.join(root, guestId);
+
+  const uploadDir = path.join(root, options.guestId);
   await mkdir(uploadDir, { recursive: true });
-  const storagePath = path.join(uploadDir, `${documentId}.pdf`);
-  await writeFile(storagePath, buffer);
+
+  const storagePath = path.join(
+    uploadDir,
+    `${options.documentId}.${FILE_EXTENSIONS[options.sourceType]}`,
+  );
+  await writeFile(storagePath, options.buffer);
   return storagePath;
 }
 
-export async function readStoredPdf(options: {
+export async function readStoredFile(options: {
   storagePath: string | null;
   fileBytes: string | null;
 }): Promise<Buffer | null> {
@@ -40,7 +50,7 @@ export async function readStoredPdf(options: {
   return null;
 }
 
-export async function removeStoredPdf(options: {
+export async function removeStoredFile(options: {
   storagePath: string | null;
 }): Promise<void> {
   if (!options.storagePath) return;

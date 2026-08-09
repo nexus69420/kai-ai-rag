@@ -1,0 +1,562 @@
+{
+  "version": 1,
+  "corpus": "halogen-internal-docs",
+  "notes": "Hand-written evaluation set over apps/web/eval/corpus. Types: lookup (single passage), multihop (requires combining documents), no-answer (must abstain), ambiguous (must ask or enumerate interpretations).",
+  "cases": [
+    {
+      "id": "q001",
+      "type": "lookup",
+      "question": "What is the maximum request payload size for POST /v2/events?",
+      "answer": "512 KB. Requests larger than that are rejected with HLG-2014.",
+      "expectedSources": ["02-api-reference.md"],
+      "mustInclude": ["512"]
+    },
+    {
+      "id": "q002",
+      "type": "lookup",
+      "question": "How many events can I send in a single batch?",
+      "answer": "Up to 500 events per batch. More than 500 returns HLG-2015.",
+      "expectedSources": ["02-api-reference.md"],
+      "mustInclude": ["500"]
+    },
+    {
+      "id": "q003",
+      "type": "lookup",
+      "question": "Which header carries authentication on the v2 API?",
+      "answer": "X-Halogen-Key. Bearer tokens are not supported on v2.",
+      "expectedSources": ["02-api-reference.md"],
+      "mustInclude": ["X-Halogen-Key"]
+    },
+    {
+      "id": "q004",
+      "type": "lookup",
+      "question": "What is the rate limit per API key?",
+      "answer": "2,000 requests per minute per key, with a burst allowance of 300. Exceeding it returns 429 with a Retry-After header.",
+      "expectedSources": ["02-api-reference.md"],
+      "mustInclude": ["2,000"]
+    },
+    {
+      "id": "q005",
+      "type": "lookup",
+      "question": "Are rate limits enforced per IP address?",
+      "answer": "No. Rate limits are enforced per API key, not per IP address.",
+      "expectedSources": ["02-api-reference.md"]
+    },
+    {
+      "id": "q006",
+      "type": "lookup",
+      "question": "How long does Halogen retain idempotency keys?",
+      "answer": "24 hours.",
+      "expectedSources": ["02-api-reference.md", "04-configuration-reference.md"],
+      "mustInclude": ["24"]
+    },
+    {
+      "id": "q007",
+      "type": "lookup",
+      "question": "What happens if I reuse an Idempotency-Key with a different body?",
+      "answer": "The request is rejected with HTTP 409 and error code HLG-3007. It is not retryable with the same key.",
+      "expectedSources": ["02-api-reference.md", "05-error-codes.md"],
+      "mustInclude": ["HLG-3007"]
+    },
+    {
+      "id": "q008",
+      "type": "lookup",
+      "question": "What is the default page size for list endpoints, and what is the maximum?",
+      "answer": "Default page size is 100 and the maximum is 1000. Only cursor pagination is supported.",
+      "expectedSources": ["02-api-reference.md"],
+      "mustInclude": ["100", "1000"]
+    },
+    {
+      "id": "q009",
+      "type": "lookup",
+      "question": "Does the v2 API support offset pagination?",
+      "answer": "No. List endpoints are cursor paginated only; offset pagination is not available.",
+      "expectedSources": ["02-api-reference.md"]
+    },
+    {
+      "id": "q010",
+      "type": "lookup",
+      "question": "How are webhooks signed?",
+      "answer": "With HMAC-SHA256 over the raw request body using the customer's signing secret, sent in the X-Halogen-Signature header alongside X-Halogen-Timestamp.",
+      "expectedSources": ["02-api-reference.md"],
+      "mustInclude": ["HMAC-SHA256"]
+    },
+    {
+      "id": "q011",
+      "type": "lookup",
+      "question": "What webhook timestamp tolerance should receivers enforce?",
+      "answer": "Reject webhooks whose timestamp is more than 300 seconds old, to prevent replay attacks.",
+      "expectedSources": ["02-api-reference.md"],
+      "mustInclude": ["300"]
+    },
+    {
+      "id": "q012",
+      "type": "lookup",
+      "question": "How many times are failed webhook deliveries retried?",
+      "answer": "6 times, with exponential backoff starting at 2 seconds and capped at 5 minutes, after which the delivery moves to the dead-letter queue.",
+      "expectedSources": ["02-api-reference.md"],
+      "mustInclude": ["6"]
+    },
+    {
+      "id": "q013",
+      "type": "lookup",
+      "question": "Which service is allowed to write to the ledger database?",
+      "answer": "Only ledger-service may write to the halogen_ledger Postgres database.",
+      "expectedSources": ["01-architecture-overview.md"],
+      "mustInclude": ["ledger-service"]
+    },
+    {
+      "id": "q014",
+      "type": "lookup",
+      "question": "How many partitions does halogen.events.raw have?",
+      "answer": "64 partitions.",
+      "expectedSources": ["01-architecture-overview.md"],
+      "mustInclude": ["64"]
+    },
+    {
+      "id": "q015",
+      "type": "lookup",
+      "question": "What is the end-to-end p99 latency budget from client request to durable queue write?",
+      "answer": "250 ms, of which edge-gateway owns 80 ms. Ledger commit is asynchronous and excluded from the budget.",
+      "expectedSources": ["01-architecture-overview.md"],
+      "mustInclude": ["250"]
+    },
+    {
+      "id": "q016",
+      "type": "lookup",
+      "question": "In which regions does Halogen run?",
+      "answer": "us-east-1, eu-west-1, and ap-southeast-1, active-active.",
+      "expectedSources": ["01-architecture-overview.md"],
+      "mustInclude": ["us-east-1", "eu-west-1", "ap-southeast-1"]
+    },
+    {
+      "id": "q017",
+      "type": "lookup",
+      "question": "What is Redis used for in Halogen?",
+      "answer": "Idempotency keys and rate-limit counters. It is treated as a cache: losing it degrades deduplication but never corrupts the ledger.",
+      "expectedSources": ["01-architecture-overview.md"]
+    },
+    {
+      "id": "q018",
+      "type": "lookup",
+      "question": "What is the acknowledgement target for a Sev2 incident?",
+      "answer": "15 minutes.",
+      "expectedSources": ["03-runbook-incidents.md"],
+      "mustInclude": ["15"]
+    },
+    {
+      "id": "q019",
+      "type": "lookup",
+      "question": "Who can change the severity of an active incident?",
+      "answer": "Only an incident commander.",
+      "expectedSources": ["03-runbook-incidents.md"],
+      "mustInclude": ["incident commander"]
+    },
+    {
+      "id": "q020",
+      "type": "lookup",
+      "question": "What is the exact command to roll back a service?",
+      "answer": "halogenctl deploy rollback --service <name> --to <revision>",
+      "expectedSources": ["03-runbook-incidents.md"],
+      "mustInclude": ["halogenctl deploy rollback"]
+    },
+    {
+      "id": "q021",
+      "type": "lookup",
+      "question": "At what consumer lag should I scale ingest-worker, and to how many replicas?",
+      "answer": "When lag on halogen.events.raw exceeds 100,000 messages, scale ingest-worker to 40 replicas.",
+      "expectedSources": ["03-runbook-incidents.md"],
+      "mustInclude": ["100,000", "40"]
+    },
+    {
+      "id": "q022",
+      "type": "lookup",
+      "question": "How long do I have to write a postmortem after a Sev1?",
+      "answer": "5 business days. Postmortems are blameless and need a timeline, contributing factors, and at least one action item with a named owner.",
+      "expectedSources": ["03-runbook-incidents.md"],
+      "mustInclude": ["5 business days"]
+    },
+    {
+      "id": "q023",
+      "type": "lookup",
+      "question": "What is the default value of HALOGEN_BATCH_SIZE?",
+      "answer": "250, with a maximum of 500.",
+      "expectedSources": ["04-configuration-reference.md"],
+      "mustInclude": ["250"]
+    },
+    {
+      "id": "q024",
+      "type": "lookup",
+      "question": "What is the configuration precedence order in Halogen?",
+      "answer": "Command-line flag, then environment variable, then config file at /etc/halogen/config.yaml, then built-in default.",
+      "expectedSources": ["04-configuration-reference.md"]
+    },
+    {
+      "id": "q025",
+      "type": "lookup",
+      "question": "Which configuration variable has no default and is required?",
+      "answer": "HALOGEN_S3_ARCHIVE_BUCKET. Services refuse to start without it; production uses nw-halogen-archive.",
+      "expectedSources": ["04-configuration-reference.md"],
+      "mustInclude": ["HALOGEN_S3_ARCHIVE_BUCKET"]
+    },
+    {
+      "id": "q026",
+      "type": "lookup",
+      "question": "What port does Prometheus scrape by default?",
+      "answer": "9090, set by HALOGEN_METRICS_PORT.",
+      "expectedSources": ["04-configuration-reference.md"],
+      "mustInclude": ["9090"]
+    },
+    {
+      "id": "q027",
+      "type": "lookup",
+      "question": "What does HLG-4022 mean and is it retryable?",
+      "answer": "Ledger pool exhausted, HTTP 503. It is retryable after the Retry-After interval.",
+      "expectedSources": ["05-error-codes.md"],
+      "mustInclude": ["503"]
+    },
+    {
+      "id": "q028",
+      "type": "lookup",
+      "question": "Which error code is returned for an expired API key?",
+      "answer": "HLG-1002, HTTP 401. It is not retryable; issue a new key.",
+      "expectedSources": ["05-error-codes.md"],
+      "mustInclude": ["HLG-1002"]
+    },
+    {
+      "id": "q029",
+      "type": "lookup",
+      "question": "What should a client do when it receives HLG-4030?",
+      "answer": "Follow the Location header to the customer's home region rather than retrying blindly.",
+      "expectedSources": ["05-error-codes.md"],
+      "mustInclude": ["Location"]
+    },
+    {
+      "id": "q030",
+      "type": "lookup",
+      "question": "How often do API keys rotate?",
+      "answer": "Every 90 days, with 7 days of overlapping validity allowed for zero-downtime rotation.",
+      "expectedSources": ["08-security-and-access.md"],
+      "mustInclude": ["90"]
+    },
+    {
+      "id": "q031",
+      "type": "lookup",
+      "question": "How long are audit logs retained?",
+      "answer": "400 days. They are queryable but not mutable.",
+      "expectedSources": ["08-security-and-access.md"],
+      "mustInclude": ["400"]
+    },
+    {
+      "id": "q032",
+      "type": "lookup",
+      "question": "Where are Halogen secrets stored?",
+      "answer": "In Vault under secret/halogen/<env>, read at startup through the Vault agent sidecar.",
+      "expectedSources": ["08-security-and-access.md"],
+      "mustInclude": ["Vault"]
+    },
+    {
+      "id": "q033",
+      "type": "lookup",
+      "question": "What approval is required for admin access?",
+      "answer": "VP approval. Admin access is reviewed quarterly and auto-revoked after 90 days of non-use.",
+      "expectedSources": ["08-security-and-access.md"],
+      "mustInclude": ["VP"]
+    },
+    {
+      "id": "q034",
+      "type": "lookup",
+      "question": "How quickly must critical vulnerabilities be patched?",
+      "answer": "Within 7 days of a fix being available. High severity within 30 days.",
+      "expectedSources": ["08-security-and-access.md"],
+      "mustInclude": ["7 days"]
+    },
+    {
+      "id": "q035",
+      "type": "lookup",
+      "question": "How do I start the local development stack?",
+      "answer": "Run halogenctl dev up, which starts Kafka, Postgres, and Redis and seeds a sandbox API key.",
+      "expectedSources": ["06-onboarding-guide.md"],
+      "mustInclude": ["halogenctl dev up"]
+    },
+    {
+      "id": "q036",
+      "type": "lookup",
+      "question": "Which test command requires Docker?",
+      "answer": "make test-integration.",
+      "expectedSources": ["06-onboarding-guide.md"],
+      "mustInclude": ["make test-integration"]
+    },
+    {
+      "id": "q037",
+      "type": "lookup",
+      "question": "When are deploys frozen?",
+      "answer": "Every Friday after 14:00 UTC through Monday 09:00 UTC, and from December 20 through January 2 inclusive.",
+      "expectedSources": ["06-onboarding-guide.md"],
+      "mustInclude": ["14:00"]
+    },
+    {
+      "id": "q038",
+      "type": "lookup",
+      "question": "Why was pgvector rejected for the support assistant?",
+      "answer": "HNSW index rebuild cost blocked writes for several minutes on the test corpus, and re-indexing is expected whenever the chunking strategy changes.",
+      "expectedSources": ["07-adr-0004-vector-store.md"],
+      "mustInclude": ["pgvector"]
+    },
+    {
+      "id": "q039",
+      "type": "lookup",
+      "question": "What is the status and date of ADR-0004?",
+      "answer": "Accepted, dated 2024-03-11. It supersedes ADR-0002.",
+      "expectedSources": ["07-adr-0004-vector-store.md"],
+      "mustInclude": ["2024-03-11"]
+    },
+    {
+      "id": "q040",
+      "type": "multihop",
+      "question": "If clients are getting HLG-4022, which configuration variable should I look at and what is its default?",
+      "answer": "HALOGEN_LEDGER_POOL_MAX, which defaults to 20. HLG-4022 means ledger-service has no free database connections.",
+      "expectedSources": ["05-error-codes.md", "04-configuration-reference.md"],
+      "mustInclude": ["HALOGEN_LEDGER_POOL_MAX", "20"]
+    },
+    {
+      "id": "q041",
+      "type": "multihop",
+      "question": "The runbook says not to scale ingest-worker past 40 replicas. What error will clients see if I do, and why?",
+      "answer": "HLG-4022, ledger pool exhausted, because the ledger connection pool becomes the bottleneck once ingest-worker scales beyond 40 replicas.",
+      "expectedSources": ["03-runbook-incidents.md", "05-error-codes.md"],
+      "mustInclude": ["HLG-4022"]
+    },
+    {
+      "id": "q042",
+      "type": "multihop",
+      "question": "Why is HALOGEN_LOG_LEVEL=debug prohibited in production?",
+      "answer": "debug logs full event envelopes, and envelopes at the halogen.events.raw stage may still contain untokenized PII because tokenization happens in ingest-worker before publishing to halogen.events.normalized.",
+      "expectedSources": ["04-configuration-reference.md", "08-security-and-access.md"],
+      "mustInclude": ["PII"]
+    },
+    {
+      "id": "q043",
+      "type": "multihop",
+      "question": "A reconciliation request was rejected with HLG-5003. What setting controls this and what is its maximum?",
+      "answer": "HALOGEN_RECON_WINDOW_DAYS, which defaults to 3 and has a maximum of 14. HLG-5003 means the requested window exceeded the configured value.",
+      "expectedSources": ["05-error-codes.md", "04-configuration-reference.md", "02-api-reference.md"],
+      "mustInclude": ["HALOGEN_RECON_WINDOW_DAYS", "14"]
+    },
+    {
+      "id": "q044",
+      "type": "multihop",
+      "question": "I need two approvals on a ledger-service pull request. Who exactly must review it?",
+      "answer": "Two approvals overall, at least one from an owner of the service, which for ledger-service is the Payments Platform team, plus a review from the Payments Platform on-call engineer.",
+      "expectedSources": ["06-onboarding-guide.md", "01-architecture-overview.md"],
+      "mustInclude": ["Payments Platform"]
+    },
+    {
+      "id": "q045",
+      "type": "multihop",
+      "question": "Why does the rollback deadline for ledger-service exist, and what is required after it passes?",
+      "answer": "Rollback is only safe within 15 minutes because ledger-service may have committed entries under the new schema. After that, rollback requires a ledger replay coordinated with the Payments Platform team.",
+      "expectedSources": ["03-runbook-incidents.md"],
+      "mustInclude": ["15 minutes", "replay"]
+    },
+    {
+      "id": "q046",
+      "type": "multihop",
+      "question": "Which services consume halogen.ledger.commits, and which teams own them?",
+      "answer": "recon-engine and notify-dispatch. recon-engine is owned by Payments Platform and notify-dispatch by the Ingest team.",
+      "expectedSources": ["01-architecture-overview.md"],
+      "mustInclude": ["recon-engine", "notify-dispatch"]
+    },
+    {
+      "id": "q047",
+      "type": "multihop",
+      "question": "If I raise HALOGEN_LEDGER_POOL_MAX, what else do I need to check first?",
+      "answer": "The database max_connections setting, because total connections equal HALOGEN_LEDGER_POOL_MAX multiplied by the replica count.",
+      "expectedSources": ["04-configuration-reference.md"],
+      "mustInclude": ["max_connections"]
+    },
+    {
+      "id": "q048",
+      "type": "multihop",
+      "question": "Changing the idempotency TTL config is discouraged. Why?",
+      "answer": "The 24-hour TTL is part of the documented public API behaviour, so changing HALOGEN_IDEMPOTENCY_TTL_HOURS changes the public contract and requires an API version note.",
+      "expectedSources": ["04-configuration-reference.md", "02-api-reference.md"],
+      "mustInclude": ["contract"]
+    },
+    {
+      "id": "q049",
+      "type": "multihop",
+      "question": "ADR-0004 says keyword search is not provided by the vector store. What follows from that?",
+      "answer": "A separate BM25 index is required for exact-token matching on error codes and configuration keys.",
+      "expectedSources": ["07-adr-0004-vector-store.md"],
+      "mustInclude": ["BM25"]
+    },
+    {
+      "id": "q050",
+      "type": "multihop",
+      "question": "How long are raw events available, and where do they live after that?",
+      "answer": "Raw events stay in halogen.events.raw for 30 days, and the S3 archive nw-halogen-archive retains them for 7 years for financial audit.",
+      "expectedSources": ["01-architecture-overview.md"],
+      "mustInclude": ["30 days", "7 years"]
+    },
+    {
+      "id": "q051",
+      "type": "multihop",
+      "question": "Sustained HLG-4021 at what rate and duration justifies raising a Sev2?",
+      "answer": "Above 5% of ledger writes for more than 10 minutes. HLG-4021 is a ledger write conflict and is otherwise expected under load.",
+      "expectedSources": ["03-runbook-incidents.md", "05-error-codes.md"],
+      "mustInclude": ["5%", "10 minutes"]
+    },
+    {
+      "id": "q052",
+      "type": "multihop",
+      "question": "If the primary on-call never acknowledges, how long until the engineering manager is paged?",
+      "answer": "35 minutes total: 10 minutes before escalating to the secondary, then a further 25 minutes before the engineering manager is paged.",
+      "expectedSources": ["03-runbook-incidents.md"],
+      "mustInclude": ["10", "25"]
+    },
+    {
+      "id": "q053",
+      "type": "multihop",
+      "question": "Why does changing the embedding model force a re-index?",
+      "answer": "Vector dimensionality is fixed when the Qdrant collection is created, so a different embedding model requires a full re-index.",
+      "expectedSources": ["07-adr-0004-vector-store.md"],
+      "mustInclude": ["dimensionality"]
+    },
+    {
+      "id": "q054",
+      "type": "no-answer",
+      "question": "What is Halogen's GraphQL schema?",
+      "answer": "The documentation does not describe a GraphQL API; only the REST v2 API is documented.",
+      "expectedSources": [],
+      "expectAbstain": true
+    },
+    {
+      "id": "q055",
+      "type": "no-answer",
+      "question": "How much does the ap-southeast-1 region cost to operate per month?",
+      "answer": "Operating cost per region is not documented.",
+      "expectedSources": [],
+      "expectAbstain": true
+    },
+    {
+      "id": "q056",
+      "type": "no-answer",
+      "question": "Who is Northwind's current chief technology officer?",
+      "answer": "The documentation does not name company executives.",
+      "expectedSources": [],
+      "expectAbstain": true
+    },
+    {
+      "id": "q057",
+      "type": "no-answer",
+      "question": "What is the SLA credit percentage for a Sev1 outage?",
+      "answer": "SLA credits are not covered by these documents; only internal severity definitions and acknowledgement targets are.",
+      "expectedSources": [],
+      "expectAbstain": true
+    },
+    {
+      "id": "q058",
+      "type": "no-answer",
+      "question": "Which mobile SDK versions support Halogen webhooks?",
+      "answer": "No mobile SDK is documented.",
+      "expectedSources": [],
+      "expectAbstain": true
+    },
+    {
+      "id": "q059",
+      "type": "no-answer",
+      "question": "What is the on-call compensation rate for weekend pages?",
+      "answer": "Compensation policy is not part of this documentation set.",
+      "expectedSources": [],
+      "expectAbstain": true
+    },
+    {
+      "id": "q060",
+      "type": "no-answer",
+      "question": "How do I configure Halogen to write to BigQuery?",
+      "answer": "BigQuery is not mentioned; the documented datastores are Postgres, Redis, Kafka, and S3.",
+      "expectedSources": [],
+      "expectAbstain": true
+    },
+    {
+      "id": "q061",
+      "type": "ambiguous",
+      "question": "What is the retention period?",
+      "answer": "It depends which data: raw events stay 30 days in Kafka, the S3 archive keeps them 7 years, audit logs are retained 400 days, and ledger entries are never deleted.",
+      "expectedSources": ["01-architecture-overview.md", "08-security-and-access.md"],
+      "expectClarification": true
+    },
+    {
+      "id": "q062",
+      "type": "ambiguous",
+      "question": "What is the maximum size?",
+      "answer": "Ambiguous: the payload maximum is 512 KB, the batch maximum is 500 events, the page size maximum is 1000, and HALOGEN_BATCH_SIZE maxes at 500.",
+      "expectedSources": ["02-api-reference.md", "04-configuration-reference.md"],
+      "expectClarification": true
+    },
+    {
+      "id": "q063",
+      "type": "ambiguous",
+      "question": "How long is the timeout?",
+      "answer": "Ambiguous: HALOGEN_LEDGER_COMMIT_TIMEOUT_MS defaults to 1500 ms, the webhook timestamp tolerance is 300 seconds, and HLG-5500 covers downstream processor timeouts.",
+      "expectedSources": ["04-configuration-reference.md", "02-api-reference.md", "05-error-codes.md"],
+      "expectClarification": true
+    },
+    {
+      "id": "q064",
+      "type": "ambiguous",
+      "question": "What needs approval?",
+      "answer": "Ambiguous: operator access needs team lead plus service owner, admin access needs VP approval, deploy freeze exceptions need an incident commander, and scaling ingest-worker past 40 replicas needs Payments Platform approval.",
+      "expectedSources": ["08-security-and-access.md", "06-onboarding-guide.md", "03-runbook-incidents.md"],
+      "expectClarification": true
+    },
+    {
+      "id": "q065",
+      "type": "ambiguous",
+      "question": "What is the 90-day rule?",
+      "answer": "Ambiguous: API keys rotate every 90 days, and unused admin access is automatically revoked after 90 days of non-use.",
+      "expectedSources": ["08-security-and-access.md"],
+      "expectClarification": true
+    },
+    {
+      "id": "q066",
+      "type": "lookup",
+      "question": "What does a 202 response from POST /v2/reconciliations contain?",
+      "answer": "A reconciliationId, which you poll with GET /v2/reconciliations/{id}.",
+      "expectedSources": ["02-api-reference.md"],
+      "mustInclude": ["reconciliationId"]
+    },
+    {
+      "id": "q067",
+      "type": "lookup",
+      "question": "What are the possible processing states of an event?",
+      "answer": "accepted, normalized, committed, and failed.",
+      "expectedSources": ["02-api-reference.md"],
+      "mustInclude": ["accepted", "normalized", "committed", "failed"]
+    },
+    {
+      "id": "q068",
+      "type": "lookup",
+      "question": "Is partial success supported when submitting a batch of events?",
+      "answer": "No. If any event fails validation the entire batch is rejected.",
+      "expectedSources": ["02-api-reference.md", "05-error-codes.md"]
+    },
+    {
+      "id": "q069",
+      "type": "lookup",
+      "question": "Why should partition-dependent logic not be validated only locally?",
+      "answer": "Local Kafka uses a single partition per topic, so ordering behaviour differs from production.",
+      "expectedSources": ["06-onboarding-guide.md"],
+      "mustInclude": ["single partition"]
+    },
+    {
+      "id": "q070",
+      "type": "lookup",
+      "question": "Which TLS versions does Halogen accept?",
+      "answer": "TLS 1.3 for all traffic, with TLS 1.2 accepted only for legacy webhook receivers under an exemption that expires at the end of the current fiscal year.",
+      "expectedSources": ["08-security-and-access.md"],
+      "mustInclude": ["TLS 1.3"]
+    }
+  ]
+}

@@ -4,20 +4,30 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AnswerMarkdown } from "@/components/answer-markdown";
+import { ConfidencePanel } from "@/components/confidence-panel";
+import { RetrievalCompare } from "@/components/retrieval-compare";
 import { SourcesPanel } from "@/components/sources-panel";
-import type { SourcePayload } from "@/lib/db/schema";
+import { CHUNK_STRATEGIES } from "@/lib/chunking";
+import type { ChunkStrategy } from "@/lib/chunking/types";
+import type {
+  CitationReport,
+  ConfidenceReport,
+  RetrievalStats,
+  SourcePayload,
+} from "@/lib/db/schema";
 import { formatGeminiError } from "@/lib/gemini-errors";
-import {
-  defaultSettings,
-  loadSettings,
-  saveSettings,
-  type KaiSettings,
-} from "@/lib/settings";
+import { SUPPORTED_EXTENSIONS } from "@/lib/formats";
+import { saveSettings } from "@/lib/settings";
+import { useKaiSettings } from "@/lib/use-kai-settings";
 
 type DocItem = {
   id: string;
   filename: string;
+  sourceType?: string;
+  chunkStrategy?: string;
   chunkCount: number;
+  duplicateChunks?: number;
+  pageCount?: number;
   status: string;
 };
 
@@ -33,6 +43,10 @@ type UiMessage = {
   role: "user" | "assistant" | "error";
   content: string;
   sources?: SourcePayload[];
+  stats?: RetrievalStats;
+  citations?: CitationReport;
+  confidence?: ConfidenceReport;
+  abstained?: boolean;
 };
 
 const SUGGESTIONS = [
@@ -41,12 +55,14 @@ const SUGGESTIONS = [
   "List important numbers, dates, or metrics",
 ];
 
+const ACCEPT = SUPPORTED_EXTENSIONS.join(",");
+
 export function ChatWorkspace() {
-  const [settings, setSettings] = useState<KaiSettings>(defaultSettings);
+  const settings = useKaiSettings();
   const [documents, setDocuments] = useState<DocItem[]>([]);
   const [chats, setChats] = useState<ChatItem[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
-  /** Empty array = ask across all uploaded docs. */
+  /** Empty array = ask across all indexed docs. */
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [input, setInput] = useState("");
@@ -55,18 +71,19 @@ export function ChatWorkspace() {
   const [status, setStatus] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
+  const [focusedCitation, setFocusedCitation] = useState<{
+    messageId: string;
+    citation: number;
+    /** Distinguishes repeat clicks on the same chip. */
+    seq: number;
+  } | null>(null);
+  const [openSources, setOpenSources] = useState<Record<string, boolean>>({});
+  const [comparing, setComparing] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
 
   const scopeAll = selectedDocIds.length === 0;
-
-  useEffect(() => {
-    const sync = () => setSettings(loadSettings());
-    sync();
-    window.addEventListener("kai-settings", sync);
-    return () => window.removeEventListener("kai-settings", sync);
-  }, []);
 
   const refreshDocs = useCallback(async () => {
     const res = await fetch("/api/documents");
@@ -102,7 +119,7 @@ export function ChatWorkspace() {
   }, [chats, selectedChatId]);
 
   const scopeLabel = useMemo(() => {
-    if (scopeAll) return "All uploaded documents";
+    if (scopeAll) return "All indexed documents";
     if (selectedDocIds.length === 1) {
       return (
         documents.find((d) => d.id === selectedDocIds[0])?.filename ??
@@ -112,13 +129,17 @@ export function ChatWorkspace() {
     return `${selectedDocIds.length} documents selected`;
   }, [scopeAll, selectedDocIds, documents]);
 
+  const lastQuestion = useMemo(
+    () => [...messages].reverse().find((m) => m.role === "user")?.content ?? "",
+    [messages],
+  );
+
   function toggleDoc(docId: string) {
-    setSelectedDocIds((prev) => {
-      if (prev.includes(docId)) {
-        return prev.filter((id) => id !== docId);
-      }
-      return [...prev, docId];
-    });
+    setSelectedDocIds((prev) =>
+      prev.includes(docId)
+        ? prev.filter((id) => id !== docId)
+        : [...prev, docId],
+    );
   }
 
   function selectAllDocs() {
@@ -131,12 +152,14 @@ export function ChatWorkspace() {
     const res = await fetch(`/api/chats/${chatId}`);
     const data = await res.json();
     if (!res.ok) return;
+
     const ids: string[] = Array.isArray(data.chat.documentIds)
       ? data.chat.documentIds
       : data.chat.documentId
         ? [data.chat.documentId]
         : [];
     setSelectedDocIds(ids);
+
     setMessages(
       (data.messages ?? []).map(
         (m: {
@@ -144,11 +167,19 @@ export function ChatWorkspace() {
           role: string;
           content: string;
           sources?: SourcePayload[];
+          retrievalStats?: RetrievalStats;
+          citations?: CitationReport;
+          confidence?: ConfidenceReport;
+          abstained?: string | null;
         }) => ({
           id: m.id,
           role: m.role === "assistant" ? "assistant" : "user",
           content: m.content,
           sources: m.sources ?? [],
+          stats: m.retrievalStats ?? undefined,
+          citations: m.citations ?? undefined,
+          confidence: m.confidence ?? undefined,
+          abstained: m.abstained === "yes",
         }),
       ),
     );
@@ -158,10 +189,7 @@ export function ChatWorkspace() {
     const res = await fetch("/api/chats", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        title: "New chat",
-        documentIds: selectedDocIds,
-      }),
+      body: JSON.stringify({ title: "New chat", documentIds: selectedDocIds }),
     });
     const data = await res.json();
     await refreshChats();
@@ -200,10 +228,7 @@ export function ChatWorkspace() {
         const res = await fetch("/api/chats", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            title,
-            documentIds: selectedDocIds,
-          }),
+          body: JSON.stringify({ title, documentIds: selectedDocIds }),
         });
         const data = await res.json();
         if (!res.ok || !data.chat?.id) {
@@ -218,9 +243,7 @@ export function ChatWorkspace() {
           body: JSON.stringify({ title }),
         });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error(data.error || "Rename failed.");
-        }
+        if (!res.ok) throw new Error(data.error || "Rename failed.");
       }
       setStatus(`Renamed to “${title}”`);
       await refreshChats();
@@ -237,12 +260,39 @@ export function ChatWorkspace() {
     await refreshDocs();
   }
 
+  async function reindexDocument(docId: string, strategy: ChunkStrategy) {
+    setStatus(`Re-indexing with ${strategy} chunking…`);
+    try {
+      const res = await fetch(`/api/documents/${docId}/reindex`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(settings.apiKey ? { "x-api-key": settings.apiKey } : {}),
+        },
+        body: JSON.stringify({
+          chunkStrategy: strategy,
+          embeddingModel: settings.embeddingModel,
+          dedupe: settings.dedupe,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Re-index failed");
+      setStatus(`${data.message} · ${data.total_chunks} chunks`);
+      await refreshDocs();
+    } catch (error) {
+      setStatus(formatGeminiError(error));
+    }
+  }
+
   async function onUpload(file: File) {
     setUploading(true);
     setStatus(`Indexing ${file.name}…`);
     try {
       const form = new FormData();
       form.append("file", file);
+      form.append("chunkStrategy", settings.chunkStrategy);
+      form.append("dedupe", settings.dedupe ? "true" : "false");
+
       const res = await fetch("/api/upload", {
         method: "POST",
         headers: {
@@ -252,11 +302,12 @@ export function ChatWorkspace() {
         body: form,
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Upload failed");
+      if (!res.ok) throw new Error(data.error || "Indexing failed");
+
       setSelectedDocIds((prev) =>
         prev.includes(data.document_id) ? prev : [...prev, data.document_id],
       );
-      setStatus(`Indexed ${data.total_chunks} chunks`);
+      setStatus(`${data.message} · ${data.chunk_strategy} chunking`);
       await refreshDocs();
     } catch (error) {
       setStatus(formatGeminiError(error));
@@ -265,20 +316,29 @@ export function ChatWorkspace() {
     }
   }
 
+  /** Clicking a [n] chip expands that message's passage list and jumps to it. */
+  function focusSource(messageId: string, citation: number) {
+    setFocusedCitation((prev) => ({
+      messageId,
+      citation,
+      seq: (prev?.seq ?? 0) + 1,
+    }));
+    setOpenSources((prev) => ({ ...prev, [messageId]: true }));
+  }
+
   function toggleTheme() {
-    const next = {
+    // saveSettings fires `kai-settings`, which flows back through useKaiSettings.
+    saveSettings({
       ...settings,
       theme: settings.theme === "dark" ? "light" : "dark",
-    } as KaiSettings;
-    saveSettings(next);
-    setSettings(next);
+    });
   }
 
   async function sendMessage(text: string) {
     const question = text.trim();
     if (!question || busy) return;
     if (!documents.length) {
-      setStatus("Upload a PDF first.");
+      setStatus("Index a document first.");
       return;
     }
 
@@ -289,6 +349,7 @@ export function ChatWorkspace() {
         ? "Searching all documents…"
         : `Searching ${selectedDocIds.length} selected document(s)…`,
     );
+
     const userMsg: UiMessage = {
       id: `u-${Date.now()}`,
       role: "user",
@@ -300,6 +361,11 @@ export function ChatWorkspace() {
       userMsg,
       { id: assistantId, role: "assistant", content: "", sources: [] },
     ]);
+
+    const patch = (updater: (message: UiMessage) => UiMessage) =>
+      setMessages((prev) =>
+        prev.map((m) => (m.id === assistantId ? updater(m) : m)),
+      );
 
     try {
       const res = await fetch("/api/chat", {
@@ -318,6 +384,11 @@ export function ChatWorkspace() {
           temperature: settings.temperature,
           topK: settings.topK,
           rerank: settings.rerank,
+          retrievalMode: settings.retrievalMode,
+          denseWeight: settings.denseWeight,
+          sparseWeight: settings.sparseWeight,
+          verifyCitations: settings.verifyCitations,
+          abstainThreshold: settings.abstainThreshold,
           apiKey: settings.apiKey || undefined,
         }),
       });
@@ -344,6 +415,10 @@ export function ChatWorkspace() {
             type: string;
             chatId?: string;
             sources?: SourcePayload[];
+            stats?: RetrievalStats;
+            citations?: CitationReport;
+            confidence?: ConfidenceReport;
+            abstained?: boolean;
             text?: string;
             error?: string;
           };
@@ -354,38 +429,34 @@ export function ChatWorkspace() {
               await refreshChats();
             }
             setStatus("");
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantId
-                  ? { ...m, sources: event.sources ?? [] }
-                  : m,
-              ),
-            );
+            patch((m) => ({
+              ...m,
+              sources: event.sources ?? [],
+              stats: event.stats,
+            }));
           } else if (event.type === "delta" && event.text) {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantId
-                  ? { ...m, content: m.content + event.text }
-                  : m,
-              ),
-            );
+            patch((m) => ({ ...m, content: m.content + event.text }));
+          } else if (event.type === "verification") {
+            setStatus("Verifying citations…");
+            patch((m) => ({ ...m, citations: event.citations }));
+          } else if (event.type === "confidence") {
+            setStatus("");
+            patch((m) => ({
+              ...m,
+              confidence: event.confidence,
+              abstained: event.abstained,
+            }));
           } else if (event.type === "error") {
             throw new Error(event.error || "Stream error");
           }
         }
       }
     } catch (error) {
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? {
-                id: m.id,
-                role: "error",
-                content: formatGeminiError(error),
-              }
-            : m,
-        ),
-      );
+      patch((m) => ({
+        id: m.id,
+        role: "error",
+        content: formatGeminiError(error),
+      }));
     } finally {
       setBusy(false);
     }
@@ -406,7 +477,7 @@ export function ChatWorkspace() {
         <input
           ref={fileRef}
           type="file"
-          accept="application/pdf,.pdf"
+          accept={ACCEPT}
           hidden
           onChange={(e) => {
             const file = e.target.files?.[0];
@@ -420,8 +491,9 @@ export function ChatWorkspace() {
           disabled={uploading}
           onClick={() => fileRef.current?.click()}
         >
-          {uploading ? "Indexing…" : "Upload PDF"}
+          {uploading ? "Indexing…" : "Index a document"}
         </button>
+        <p className="sidebar-hint">PDF, Markdown, HTML, or text.</p>
 
         <div className="sidebar-label">
           <span>Chats</span>
@@ -447,54 +519,82 @@ export function ChatWorkspace() {
         </div>
 
         <div className="sidebar-label">
-          <span>Documents</span>
+          <span>Corpus</span>
           <button
             type="button"
             className="sidebar-mini"
             onClick={selectAllDocs}
-            title="Clear selection = search all docs"
+            title="Clear selection = search everything"
           >
             {scopeAll ? "All" : "Use all"}
           </button>
         </div>
         <p className="sidebar-hint">Click to multi-select. Empty = all docs.</p>
+
         <div className="library">
           {documents.map((doc) => {
             const selected = selectedDocIds.includes(doc.id);
             return (
-              <button
-                type="button"
+              <div
                 key={doc.id}
                 className={`doc-card ${selected ? "selected" : ""} ${scopeAll ? "all-scope" : ""}`}
-                onClick={() => toggleDoc(doc.id)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  if (window.confirm(`Delete ${doc.filename}?`)) {
-                    void deleteDocument(doc.id);
-                  }
-                }}
               >
-                <span className="doc-check">{selected ? "✓" : scopeAll ? "•" : ""}</span>
-                <span className="doc-card-copy">
-                  <strong>{doc.filename}</strong>
-                  <small>
-                    {doc.status} · {doc.chunkCount} chunks
-                  </small>
-                </span>
-              </button>
+                <button
+                  type="button"
+                  className="doc-card-main"
+                  onClick={() => toggleDoc(doc.id)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    if (window.confirm(`Delete ${doc.filename}?`)) {
+                      void deleteDocument(doc.id);
+                    }
+                  }}
+                >
+                  <span className="doc-check">
+                    {selected ? "✓" : scopeAll ? "•" : ""}
+                  </span>
+                  <span className="doc-card-copy">
+                    <strong>{doc.filename}</strong>
+                    <small>
+                      {doc.status} · {doc.chunkCount} chunks
+                      {doc.duplicateChunks
+                        ? ` · ${doc.duplicateChunks} dupes skipped`
+                        : ""}
+                    </small>
+                    <small>
+                      {doc.sourceType ?? "pdf"} · {doc.chunkStrategy ?? "structural"}
+                    </small>
+                  </span>
+                </button>
+                <select
+                  className="doc-strategy"
+                  value={doc.chunkStrategy ?? "structural"}
+                  title="Re-chunk this document"
+                  onChange={(e) =>
+                    void reindexDocument(doc.id, e.target.value as ChunkStrategy)
+                  }
+                >
+                  {CHUNK_STRATEGIES.map((strategy) => (
+                    <option key={strategy} value={strategy}>
+                      {strategy}
+                    </option>
+                  ))}
+                </select>
+              </div>
             );
           })}
           {!documents.length && (
-            <small style={{ color: "#9fb1ba", padding: "0 8px" }}>
-              No PDFs yet. Upload to start.
+            <small className="library-empty">
+              Nothing indexed yet. Add a document to start.
             </small>
           )}
         </div>
 
         <div className="guest-card">
           <strong>Guest workspace</strong>
-          <span>Chats & docs are kept for this browser session cookie.</span>
+          <span>Chats and corpus are kept for this browser session cookie.</span>
           <Link href="/settings">Settings / API keys →</Link>
+          <Link href="/api-docs">API reference →</Link>
         </div>
       </aside>
 
@@ -526,6 +626,14 @@ export function ChatWorkspace() {
             )}
           </div>
           <div className="header-actions">
+            <button
+              type="button"
+              className="rename"
+              onClick={() => setComparing(true)}
+              disabled={!documents.length}
+            >
+              Compare retrieval
+            </button>
             <button type="button" className="rename" onClick={startRename}>
               Rename
             </button>
@@ -579,10 +687,11 @@ export function ChatWorkspace() {
           {!messages.length && (
             <div className="welcome">
               <p className="welcome-kicker">Your research desk</p>
-              <h2>Upload a PDF. Ask anything inside it.</h2>
+              <h2>Index your docs. Ask anything inside them.</h2>
               <p>
-                Select one or more documents in the sidebar, or leave none
-                selected to search all uploads.
+                Answers cite the exact passages they came from, every citation is
+                audited, and low-confidence questions get an honest report
+                instead of a guess.
               </p>
               <div className="suggestions">
                 {SUGGESTIONS.map((s) => (
@@ -603,6 +712,7 @@ export function ChatWorkspace() {
                     ? "Error"
                     : "KAI"}
               </div>
+
               {message.role === "user" ? (
                 <p>{message.content}</p>
               ) : message.role === "error" ? (
@@ -610,7 +720,11 @@ export function ChatWorkspace() {
               ) : (
                 <>
                   {message.content ? (
-                    <AnswerMarkdown content={message.content} />
+                    <AnswerMarkdown
+                      content={message.content}
+                      sourceCount={message.sources?.length ?? 0}
+                      onCitationClick={(citation) => focusSource(message.id, citation)}
+                    />
                   ) : (
                     busy && (
                       <div className="thinking">
@@ -620,7 +734,35 @@ export function ChatWorkspace() {
                       </div>
                     )
                   )}
-                  <SourcesPanel sources={message.sources ?? []} />
+
+                  <ConfidencePanel
+                    confidence={message.confidence}
+                    citations={message.citations}
+                    stats={message.stats}
+                    abstained={message.abstained}
+                  />
+
+                  <SourcesPanel
+                    sources={message.sources ?? []}
+                    citations={message.citations}
+                    focused={
+                      focusedCitation?.messageId === message.id
+                        ? focusedCitation.citation
+                        : null
+                    }
+                    focusSeq={
+                      focusedCitation?.messageId === message.id
+                        ? focusedCitation.seq
+                        : 0
+                    }
+                    open={Boolean(openSources[message.id])}
+                    onToggle={() =>
+                      setOpenSources((prev) => ({
+                        ...prev,
+                        [message.id]: !prev[message.id],
+                      }))
+                    }
+                  />
                 </>
               )}
             </div>
@@ -648,9 +790,10 @@ export function ChatWorkspace() {
           />
           <div>
             <span>
-              {settings.chatModel} · topK {settings.topK}
-              {settings.rerank ? " · rerank on" : " · rerank off"}
-              {!settings.apiKey ? " · using server key fallback if set" : ""}
+              {settings.chatModel} · {settings.retrievalMode} · topK{" "}
+              {settings.topK}
+              {settings.rerank ? " · rerank" : ""}
+              {settings.verifyCitations ? " · verified" : ""}
             </span>
             <button type="submit" disabled={busy || !input.trim()}>
               {busy ? "Thinking…" : "Ask"}
@@ -658,6 +801,15 @@ export function ChatWorkspace() {
           </div>
         </form>
       </section>
+
+      {comparing && (
+        <RetrievalCompare
+          settings={settings}
+          documentIds={selectedDocIds}
+          initialQuestion={lastQuestion || input}
+          onClose={() => setComparing(false)}
+        />
+      )}
     </div>
   );
 }

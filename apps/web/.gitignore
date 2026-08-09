@@ -5,3 +5,10 @@ uploads
 .next
 node_modules
 drizzle/meta
+
+# Eval output: reports are per-run artifacts, not source. Commit the ones you
+# want to cite from the case study explicitly with `git add -f`.
+eval/reports
+tsconfig.tsbuildinfo
+.vercel
+.env*

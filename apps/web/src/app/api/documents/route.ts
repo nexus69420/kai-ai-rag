@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
 import { getDb, ensureSchema } from "@/lib/db";
@@ -16,7 +16,11 @@ export async function GET() {
     .select({
       id: documents.id,
       filename: documents.filename,
+      sourceType: documents.sourceType,
+      chunkStrategy: documents.chunkStrategy,
       chunkCount: documents.chunkCount,
+      duplicateChunks: documents.duplicateChunks,
+      pageCount: documents.pageCount,
       status: documents.status,
       createdAt: documents.createdAt,
     })

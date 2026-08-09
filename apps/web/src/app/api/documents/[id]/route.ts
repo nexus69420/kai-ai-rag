@@ -1,11 +1,12 @@
 import { and, eq, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
+import { invalidateSparseIndex } from "@/lib/bm25";
 import { getDb, ensureSchema } from "@/lib/db";
 import { documents } from "@/lib/db/schema";
 import { getOrCreateGuestId } from "@/lib/guest";
 import { deleteDocumentVectors } from "@/lib/qdrant";
-import { removeStoredPdf } from "@/lib/storage";
+import { removeStoredFile } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,7 +31,9 @@ export async function DELETE(_request: Request, { params }: Params) {
 
   await deleteDocumentVectors(id);
   await db.delete(documents).where(eq(documents.id, id));
-  await removeStoredPdf({ storagePath: doc.storagePath });
+  await removeStoredFile({ storagePath: doc.storagePath });
+  // Chunks cascade away with the document; the sparse index must follow.
+  invalidateSparseIndex(guestId);
 
   return NextResponse.json({ ok: true });
 }
@@ -45,7 +48,12 @@ export async function GET(_request: Request, { params }: Params) {
     .select({
       id: documents.id,
       filename: documents.filename,
+      sourceType: documents.sourceType,
+      chunkStrategy: documents.chunkStrategy,
+      embeddingModel: documents.embeddingModel,
       chunkCount: documents.chunkCount,
+      duplicateChunks: documents.duplicateChunks,
+      pageCount: documents.pageCount,
       status: documents.status,
       createdAt: documents.createdAt,
       storagePath: documents.storagePath,
@@ -62,7 +70,12 @@ export async function GET(_request: Request, { params }: Params) {
   return NextResponse.json({
     id: doc.id,
     filename: doc.filename,
+    sourceType: doc.sourceType,
+    chunkStrategy: doc.chunkStrategy,
+    embeddingModel: doc.embeddingModel,
     chunkCount: doc.chunkCount,
+    duplicateChunks: doc.duplicateChunks,
+    pageCount: doc.pageCount,
     status: doc.status,
     createdAt: doc.createdAt,
     hasFile: Boolean(doc.storagePath) || Boolean(doc.hasFileBytes),

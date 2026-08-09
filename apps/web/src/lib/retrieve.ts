@@ -1,330 +1,389 @@
-import MiniSearch from "minisearch";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, eq, gte, inArray, lte, or, type SQL } from "drizzle-orm";
 
+import { getSparseIndex } from "./bm25";
 import { getDb } from "./db";
-import { chunks } from "./db/schema";
-import type { SourcePayload } from "./db/schema";
-import { denseSearch } from "./qdrant";
+import { chunks, documents } from "./db/schema";
+import type { RetrievalStats, SourcePayload } from "./db/schema";
 import { embedQuery } from "./gemini";
-import { rerankCandidates } from "./rerank";
+import { denseSearch } from "./qdrant";
+import { rerankCandidates, type RerankOutcome } from "./rerank";
+import type { RetrievalMode } from "./retrieval-modes";
 
-type Retrieved = SourcePayload & { id: string; chunkIndex?: number };
+export { RETRIEVAL_MODES, isRetrievalMode } from "./retrieval-modes";
+export type { RetrievalMode } from "./retrieval-modes";
 
-function reciprocalRankFusion(
-  rankedLists: Retrieved[][],
-  limit: number,
-): Retrieved[] {
-  const scores = new Map<string, { item: Retrieved; score: number }>();
-  const k = 60;
+/** Rank-fusion constant from the original RRF paper. */
+const RRF_K = 60;
+const NEIGHBOR_RADIUS = 2;
 
-  rankedLists.forEach((list) => {
-    list.forEach((item, index) => {
-      const add = 1 / (k + index + 1);
-      const existing = scores.get(item.id);
-      if (existing) {
-        existing.score += add;
-      } else {
-        scores.set(item.id, { item, score: add });
-      }
-    });
-  });
+export type Candidate = SourcePayload & {
+  id: string;
+  chunkIndex: number;
+  denseRank?: number;
+  sparseRank?: number;
+  fusedScore?: number;
+};
 
-  return [...scores.values()]
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-    .map(({ item, score }) => ({ ...item, score }));
-}
+export type RetrieveResult = {
+  /** Final passages, numbered for `[n]` citation. */
+  sources: SourcePayload[];
+  /** Full fused pool before rerank — powers the retrieval comparison view. */
+  candidates: SourcePayload[];
+  stats: RetrievalStats;
+};
 
-async function keywordSearch(options: {
+export type RetrieveOptions = {
   query: string;
   guestId: string;
-  documentId?: string | null;
+  apiKey: string;
+  topK: number;
+  filenameByDoc: Map<string, string>;
   documentIds?: string[] | null;
-  limit: number;
-}): Promise<Retrieved[]> {
-  const db = getDb();
-  const ids =
+  documentId?: string | null;
+  embeddingModel?: string;
+  mode?: RetrievalMode;
+  /** Relative pull of dense vs sparse in the fusion step. Normalized to 1. */
+  denseWeight?: number;
+  sparseWeight?: number;
+  /** Candidates fused before rerank. Defaults to 20 per the guide. */
+  candidatePool?: number;
+  rerank?: boolean;
+  rerankModel?: string;
+  /** Pull adjacent chunks around each hit so headings carry their body text. */
+  expandNeighbors?: boolean;
+};
+
+export async function hybridRetrieve(
+  options: RetrieveOptions,
+): Promise<RetrieveResult> {
+  const startedAt = Date.now();
+  const mode = options.mode ?? "hybrid";
+  const topK = options.topK;
+  const poolSize = options.candidatePool ?? Math.max(20, topK * 3);
+  const perListLimit = Math.max(poolSize, 10);
+
+  const { denseWeight, sparseWeight } = normalizeWeights(
+    mode,
+    options.denseWeight,
+    options.sparseWeight,
+  );
+
+  const scopeIds =
     options.documentIds?.filter(Boolean) ??
-    (options.documentId ? [options.documentId] : []);
-  const conditions = [eq(chunks.guestId, options.guestId)];
-  if (ids.length === 1) {
-    conditions.push(eq(chunks.documentId, ids[0]));
-  } else if (ids.length > 1) {
-    conditions.push(inArray(chunks.documentId, ids));
+    (options.documentId ? [options.documentId] : null);
+
+  const [dense, sparse] = await Promise.all([
+    mode === "sparse"
+      ? Promise.resolve([] as Candidate[])
+      : denseCandidates(options, scopeIds, perListLimit),
+    mode === "dense"
+      ? Promise.resolve([] as Candidate[])
+      : sparseCandidates(options, scopeIds, perListLimit),
+  ]);
+
+  const sparseIndex = await getSparseIndex(options.guestId);
+  const keywordCoverage = sparseIndex.termCoverage(options.query, scopeIds);
+
+  let fused =
+    mode === "hybrid"
+      ? weightedRrf(
+          [
+            { list: dense, weight: denseWeight, label: "dense" as const },
+            { list: sparse, weight: sparseWeight, label: "sparse" as const },
+          ],
+          poolSize,
+        )
+      : (mode === "dense" ? dense : sparse).slice(0, poolSize);
+
+  if (!fused.length && dense.length) fused = dense.slice(0, poolSize);
+
+  let rerankOutcome: RerankOutcome<Candidate> = {
+    candidates: fused.slice(0, topK),
+    backend: "none",
+  };
+
+  if (options.rerank !== false && fused.length > 1) {
+    rerankOutcome = await rerankCandidates({
+      query: options.query,
+      candidates: fused,
+      apiKey: options.apiKey,
+      topK,
+      model: options.rerankModel,
+    });
+  }
+
+  const primary = rerankOutcome.candidates.slice(0, topK);
+  const neighbours =
+    options.expandNeighbors === false
+      ? []
+      : await fetchNeighbours(primary, options.filenameByDoc, topK);
+
+  const ordered = [...primary, ...neighbours];
+  const sources = ordered.map((candidate, index) => toSource(candidate, index + 1));
+
+  const rerankScores = primary
+    .map((c) => c.rerankScore)
+    .filter((s): s is number => typeof s === "number");
+
+  const stats: RetrievalStats = {
+    mode,
+    denseWeight,
+    sparseWeight,
+    denseHits: dense.length,
+    sparseHits: sparse.length,
+    fusedCandidates: fused.length,
+    rerankUsed: rerankOutcome.backend !== "none",
+    rerankBackend: rerankOutcome.backend,
+    topDenseScore: round(Math.max(0, ...dense.map((d) => d.denseScore ?? 0), 0)),
+    meanRerankScore: rerankScores.length
+      ? round(rerankScores.reduce((a, b) => a + b, 0) / rerankScores.length)
+      : null,
+    keywordCoverage: round(keywordCoverage),
+    documentsSearched: scopeIds?.length ?? options.filenameByDoc.size,
+    passagesReturned: sources.length,
+    durationMs: Date.now() - startedAt,
+  };
+
+  return {
+    sources,
+    candidates: fused.map((candidate, index) => toSource(candidate, index + 1)),
+    stats,
+  };
+}
+
+export function normalizeWeights(
+  mode: RetrievalMode,
+  dense?: number,
+  sparse?: number,
+) {
+  if (mode === "dense") return { denseWeight: 1, sparseWeight: 0 };
+  if (mode === "sparse") return { denseWeight: 0, sparseWeight: 1 };
+
+  const d = Number.isFinite(dense) ? Math.max(0, dense!) : 0.7;
+  const s = Number.isFinite(sparse) ? Math.max(0, sparse!) : 0.3;
+  const total = d + s;
+  if (!total) return { denseWeight: 0.5, sparseWeight: 0.5 };
+  return { denseWeight: round(d / total), sparseWeight: round(s / total) };
+}
+
+/**
+ * Weighted Reciprocal Rank Fusion. Each list contributes
+ * `weight / (k + rank)`, so a document ranked highly by either retriever
+ * surfaces, while documents ranked by both dominate.
+ */
+export function weightedRrf(
+  lists: Array<{
+    list: Candidate[];
+    weight: number;
+    label: "dense" | "sparse";
+  }>,
+  limit: number,
+): Candidate[] {
+  const merged = new Map<string, Candidate & { fusedScore: number }>();
+
+  for (const { list, weight, label } of lists) {
+    if (!weight) continue;
+
+    list.forEach((item, index) => {
+      const contribution = weight / (RRF_K + index + 1);
+      const existing = merged.get(item.id);
+
+      if (existing) {
+        existing.fusedScore += contribution;
+        existing.retrievedBy = [
+          ...new Set([...(existing.retrievedBy ?? []), label]),
+        ];
+        if (label === "dense") {
+          existing.denseScore = item.denseScore;
+          existing.denseRank = index + 1;
+        } else {
+          existing.sparseScore = item.sparseScore;
+          existing.sparseRank = index + 1;
+        }
+        return;
+      }
+
+      merged.set(item.id, {
+        ...item,
+        fusedScore: contribution,
+        retrievedBy: [label],
+        denseRank: label === "dense" ? index + 1 : undefined,
+        sparseRank: label === "sparse" ? index + 1 : undefined,
+      });
+    });
+  }
+
+  return [...merged.values()]
+    .sort((a, b) => b.fusedScore - a.fusedScore)
+    .slice(0, limit)
+    .map((item) => ({ ...item, score: round(item.fusedScore) }));
+}
+
+async function denseCandidates(
+  options: RetrieveOptions,
+  scopeIds: string[] | null,
+  limit: number,
+): Promise<Candidate[]> {
+  const vector = await embedQuery(options.query, {
+    apiKey: options.apiKey,
+    model: options.embeddingModel,
+  });
+
+  const points = await denseSearch({
+    vector,
+    guestId: options.guestId,
+    documentIds: scopeIds,
+    limit,
+  });
+
+  return points.map((point) => {
+    const payload = (point.payload ?? {}) as Record<string, unknown>;
+    const documentId = String(payload.document_id ?? "");
+    const score = Number(point.score ?? 0);
+    return {
+      id: String(point.id),
+      chunkId: String(point.id),
+      text: String(payload.text ?? ""),
+      page: Number(payload.page ?? 1),
+      chunkIndex: Number(payload.chunk_index ?? 0),
+      heading: (payload.heading as string | null) ?? null,
+      documentId,
+      filename:
+        String(payload.filename ?? "") ||
+        options.filenameByDoc.get(documentId) ||
+        "document",
+      denseScore: round(score),
+      score: round(score),
+      retrievedBy: ["dense"],
+    } satisfies Candidate;
+  });
+}
+
+async function sparseCandidates(
+  options: RetrieveOptions,
+  scopeIds: string[] | null,
+  limit: number,
+): Promise<Candidate[]> {
+  const index = await getSparseIndex(options.guestId);
+  const hits = index.search(options.query, { limit, documentIds: scopeIds });
+
+  return hits.map((hit) => ({
+    id: hit.id,
+    chunkId: hit.id,
+    text: hit.doc.text,
+    page: hit.doc.page,
+    chunkIndex: hit.doc.chunkIndex,
+    heading: hit.doc.heading,
+    documentId: hit.doc.documentId,
+    filename: options.filenameByDoc.get(hit.doc.documentId) ?? "document",
+    sparseScore: round(hit.score),
+    score: round(hit.score),
+    retrievedBy: ["sparse"],
+  }));
+}
+
+/**
+ * Headings and slide titles frequently win retrieval while the actual answer
+ * sits in the next chunk, so pull a small window of neighbours around each hit.
+ */
+async function fetchNeighbours(
+  primary: Candidate[],
+  filenameByDoc: Map<string, string>,
+  topK: number,
+): Promise<Candidate[]> {
+  if (!primary.length) return [];
+
+  const budget = Math.max(2, Math.ceil(topK / 2));
+  const db = getDb();
+  const seen = new Set(primary.map((p) => p.id));
+
+  const ranges: SQL[] = [];
+  for (const hit of primary) {
+    ranges.push(
+      and(
+        eq(chunks.documentId, hit.documentId),
+        gte(chunks.chunkIndex, hit.chunkIndex - NEIGHBOR_RADIUS),
+        lte(chunks.chunkIndex, hit.chunkIndex + NEIGHBOR_RADIUS),
+      )!,
+    );
   }
 
   const rows = await db
     .select()
     .from(chunks)
-    .where(and(...conditions))
-    .limit(500);
+    .where(ranges.length === 1 ? ranges[0] : or(...ranges))
+    .limit(primary.length * (NEIGHBOR_RADIUS * 2 + 1));
 
-  if (!rows.length) return [];
-
-  const mini = new MiniSearch({
-    fields: ["text"],
-    storeFields: ["text", "page", "documentId", "filename", "id"],
-    searchOptions: { boost: { text: 2 }, fuzzy: 0.15 },
-  });
-
-  const docs = rows.map((row) => ({
-    id: row.id,
-    text: row.text,
-    page: row.page,
-    documentId: row.documentId,
-    filename: "",
-  }));
-
-  // Attach filenames via a second lightweight query map if needed — filled by caller maps
-  mini.addAll(docs);
-  const hits = mini.search(options.query, { prefix: true }).slice(0, options.limit);
-
-  const idSet = hits.map((h) => String(h.id));
-  if (!idSet.length) {
-    // fallback: naive includes
-    const terms = options.query.toLowerCase().split(/\s+/).filter(Boolean);
-    return rows
-      .map((row) => {
-        const hay = row.text.toLowerCase();
-        const score = terms.reduce((acc, t) => acc + (hay.includes(t) ? 1 : 0), 0);
-        return { row, score };
-      })
-      .filter((x) => x.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, options.limit)
-      .map(({ row, score }) => ({
-        id: row.id,
-        text: row.text,
-        page: row.page,
-        documentId: row.documentId,
-        filename: "",
-        score,
-      }));
-  }
-
-  const byId = new Map(rows.map((r) => [r.id, r]));
-  return hits
-    .map((hit) => {
-      const row = byId.get(String(hit.id));
-      if (!row) return null;
-      return {
-        id: row.id,
-        text: row.text,
-        page: row.page,
-        documentId: row.documentId,
-        filename: "",
-        score: hit.score,
-      } satisfies Retrieved;
-    })
-    .filter(Boolean) as Retrieved[];
-}
-
-export async function hybridRetrieve(options: {
-  query: string;
-  guestId: string;
-  documentId?: string | null;
-  documentIds?: string[] | null;
-  apiKey: string;
-  embeddingModel?: string;
-  topK: number;
-  filenameByDoc: Map<string, string>;
-  /** Pull a wider pool before Gemini/lexical rerank (default topK * 3, min 12). */
-  candidatePool?: number;
-  /** Set false to skip LLM rerank (still uses RRF). Default true. */
-  rerank?: boolean;
-  rerankModel?: string;
-}): Promise<SourcePayload[]> {
-  const denseLimit = Math.max(options.topK * 3, 12);
-  const poolSize = options.candidatePool ?? denseLimit;
-  const scopeIds =
-    options.documentIds?.filter(Boolean) ??
-    (options.documentId ? [options.documentId] : null);
-  const queryVector = await embedQuery(options.query, {
-    apiKey: options.apiKey,
-    model: options.embeddingModel,
-  });
-
-  const densePoints = await denseSearch({
-    vector: queryVector,
-    guestId: options.guestId,
-    documentIds: scopeIds,
-    limit: denseLimit,
-  });
-
-  const dense: Retrieved[] = densePoints.map((point) => {
-    const payload = (point.payload ?? {}) as Record<string, unknown>;
-    const documentId = String(payload.document_id ?? "");
-    return {
-      id: String(point.id),
-      text: String(payload.text ?? ""),
-      page: Number(payload.page ?? 1),
-      documentId,
-      filename:
-        String(payload.filename ?? "") ||
-        options.filenameByDoc.get(documentId) ||
-        "document.pdf",
-      score: point.score,
-    };
-  });
-
-  const keyword = await keywordSearch({
-    query: options.query,
-    guestId: options.guestId,
-    documentIds: scopeIds,
-    limit: denseLimit,
-  });
-
-  const keywordWithNames = keyword.map((item) => ({
-    ...item,
-    filename:
-      item.filename ||
-      options.filenameByDoc.get(item.documentId) ||
-      "document.pdf",
-  }));
-
-  let fused = reciprocalRankFusion([dense, keywordWithNames], poolSize);
-
-  if (!fused.length && dense.length) {
-    fused = dense.slice(0, poolSize);
-  }
-
-  // Rerank the hybrid shortlist, then expand neighbors around the best hits.
-  let selected: Retrieved[];
-  if (options.rerank !== false && fused.length > 1) {
-    const reranked = await rerankCandidates({
-      query: options.query,
-      candidates: fused,
-      apiKey: options.apiKey,
-      topK: options.topK,
-      model: options.rerankModel ?? "gemini-2.5-flash",
-    });
-    const byId = new Map(fused.map((f) => [f.id, f]));
-    selected = reranked.map((item, index) => {
-      const original =
-        (item.id ? byId.get(item.id) : undefined) ??
-        fused.find(
-          (f) =>
-            f.text === item.text &&
-            f.page === item.page &&
-            f.documentId === item.documentId,
-        ) ??
-        fused[index];
-      return {
-        id: original?.id ?? item.id ?? `rerank-${index}`,
-        text: item.text,
-        page: item.page,
-        documentId: item.documentId,
-        filename: item.filename,
-        score: item.score,
-        chunkIndex: original?.chunkIndex,
-      };
-    });
-  } else {
-    selected = fused.slice(0, options.topK);
-  }
-
-  const expanded = await expandWithNeighbors(selected, options.topK + 4);
-  return expanded.map(({ id: _id, chunkIndex: _ci, ...rest }) => rest);
-}
-
-/**
- * Lecture slides often index as title-only hits. Pull ±2 neighbors by chunk_index
- * (and same-page siblings) so the LLM gets bullets/formulas around the heading.
- */
-async function expandWithNeighbors(
-  hits: Retrieved[],
-  limit: number,
-): Promise<Retrieved[]> {
-  if (!hits.length) return hits;
-  const db = getDb();
-  const byKey = new Map<string, Retrieved>();
-  const docIds = [...new Set(hits.map((h) => h.documentId))];
-
-  const allRows =
-    docIds.length === 0
-      ? []
-      : await db
-          .select()
-          .from(chunks)
-          .where(inArray(chunks.documentId, docIds))
-          .orderBy(asc(chunks.chunkIndex));
-
-  const byDoc = new Map<string, typeof allRows>();
-  for (const row of allRows) {
-    const list = byDoc.get(row.documentId) ?? [];
-    list.push(row);
-    byDoc.set(row.documentId, list);
-  }
-
-  for (const hit of hits) {
-    byKey.set(hit.id, hit);
-    const neighbors = byDoc.get(hit.documentId) ?? [];
-    const center =
-      neighbors.find((row) => row.id === hit.id) ??
-      neighbors.find((row) => row.page === hit.page);
-
-    if (!center) continue;
-
-    for (const row of neighbors) {
-      const nearIndex = Math.abs(row.chunkIndex - center.chunkIndex) <= 2;
-      const nearPage = Math.abs(row.page - center.page) <= 1;
-      if (!nearIndex && !nearPage) continue;
-      if (byKey.has(row.id)) continue;
-      byKey.set(row.id, {
-        id: row.id,
-        text: row.text,
-        page: row.page,
-        documentId: row.documentId,
-        filename: hit.filename,
-        chunkIndex: row.chunkIndex,
-        score: hit.score,
-      });
-    }
-  }
-
-  const hitIds = new Set(hits.map((h) => h.id));
-  const originals = hits.filter((h) => byKey.has(h.id));
-  const extras = [...byKey.values()]
-    .filter((h) => !hitIds.has(h.id))
-    .sort(
-      (a, b) => a.page - b.page || (a.chunkIndex ?? 0) - (b.chunkIndex ?? 0),
+  const rankById = new Map(primary.map((p, index) => [p.id, index]));
+  const anchorFor = (row: (typeof rows)[number]) =>
+    primary.find(
+      (p) =>
+        p.documentId === row.documentId &&
+        Math.abs(p.chunkIndex - row.chunkIndex) <= NEIGHBOR_RADIUS,
     );
 
-  const merged = [...originals, ...extras].slice(0, limit);
+  // Neighbours inherit their anchor's rank so the best hit's context wins the
+  // remaining budget before a weaker hit's context gets any.
+  const UNRANKED = Number.MAX_SAFE_INTEGER;
+  const rankOf = (row: (typeof rows)[number]) => {
+    const anchor = anchorFor(row);
+    return anchor ? (rankById.get(anchor.id) ?? UNRANKED) : UNRANKED;
+  };
 
-  return merged.map((item) => {
-    if (item.text.length >= 200) return item;
-    const sameDoc = merged
-      .filter((m) => m.documentId === item.documentId)
-      .filter((m) => Math.abs(m.page - item.page) <= 1)
-      .sort(
-        (a, b) => a.page - b.page || (a.chunkIndex ?? 0) - (b.chunkIndex ?? 0),
-      );
-    if (sameDoc.length <= 1) return item;
-    const stitched = [...new Set(sameDoc.map((m) => m.text))].join("\n\n");
-    return { ...item, text: stitched };
-  });
+  return rows
+    .filter((row) => !seen.has(row.id))
+    .sort(
+      (a, b) =>
+        rankOf(a) - rankOf(b) || a.page - b.page || a.chunkIndex - b.chunkIndex,
+    )
+    .slice(0, budget)
+    .map((row) => ({
+      id: row.id,
+      chunkId: row.id,
+      text: row.text,
+      page: row.page,
+      chunkIndex: row.chunkIndex,
+      heading: row.heading,
+      documentId: row.documentId,
+      filename: filenameByDoc.get(row.documentId) ?? "document",
+      score: anchorFor(row)?.score,
+      retrievedBy: ["neighbor"] as Array<"dense" | "sparse" | "neighbor">,
+    }));
 }
 
-export async function loadFilenameMap(
-  guestId: string,
-  documentIds: string[],
-) {
+function toSource(candidate: Candidate, citation: number): SourcePayload {
+  return {
+    citation,
+    chunkId: candidate.chunkId ?? candidate.id,
+    text: candidate.text,
+    page: candidate.page,
+    heading: candidate.heading ?? null,
+    filename: candidate.filename,
+    documentId: candidate.documentId,
+    score: candidate.score,
+    denseScore: candidate.denseScore,
+    sparseScore: candidate.sparseScore,
+    rerankScore: candidate.rerankScore,
+    retrievedBy: candidate.retrievedBy,
+  };
+}
+
+function round(value: number) {
+  return Math.round(value * 1000) / 1000;
+}
+
+export async function loadFilenameMap(guestId: string, documentIds: string[]) {
   const map = new Map<string, string>();
   if (!documentIds.length) return map;
+
   const db = getDb();
-  const { documents } = await import("./db/schema");
   const rows = await db
     .select()
     .from(documents)
     .where(
-      and(
-        eq(documents.guestId, guestId),
-        inArray(documents.id, documentIds),
-      ),
+      and(eq(documents.guestId, guestId), inArray(documents.id, documentIds)),
     );
-  for (const row of rows) {
-    map.set(row.id, row.filename);
-  }
+
+  for (const row of rows) map.set(row.id, row.filename);
   return map;
 }
