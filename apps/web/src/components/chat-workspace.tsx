@@ -69,6 +69,11 @@ export function ChatWorkspace() {
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState("");
+  const [toast, setToast] = useState<{
+    id: number;
+    message: string;
+    actionLabel?: string;
+  } | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [focusedCitation, setFocusedCitation] = useState<{
@@ -82,6 +87,7 @@ export function ChatWorkspace() {
   const fileRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const scopeAll = selectedDocIds.length === 0;
 
@@ -112,6 +118,23 @@ export function ChatWorkspace() {
       renameInputRef.current?.select();
     }
   }, [renaming]);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
+
+  function showToast(message: string, actionLabel?: string) {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast({ id: Date.now(), message, actionLabel });
+    toastTimerRef.current = setTimeout(() => setToast(null), 4200);
+  }
+
+  function dismissToast() {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast(null);
+  }
 
   const activeTitle = useMemo(() => {
     const chat = chats.find((c) => c.id === selectedChatId);
@@ -260,6 +283,25 @@ export function ChatWorkspace() {
     await refreshDocs();
   }
 
+  async function deleteAllDocuments() {
+    if (!documents.length) return;
+    if (
+      !window.confirm(
+        `Delete all ${documents.length} document${documents.length === 1 ? "" : "s"}? This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    await Promise.all(
+      documents.map((doc) =>
+        fetch(`/api/documents/${doc.id}`, { method: "DELETE" }),
+      ),
+    );
+    setSelectedDocIds([]);
+    await refreshDocs();
+    setStatus("All documents deleted.");
+  }
+
   async function reindexDocument(docId: string, strategy: ChunkStrategy) {
     setStatus(`Re-indexing with ${strategy} chunking…`);
     try {
@@ -338,7 +380,7 @@ export function ChatWorkspace() {
     const question = text.trim();
     if (!question || busy) return;
     if (!documents.length) {
-      setStatus("Index a document first.");
+      showToast("Upload a document first to start asking.", "Upload");
       return;
     }
 
@@ -520,14 +562,26 @@ export function ChatWorkspace() {
 
         <div className="sidebar-label">
           <span>Corpus</span>
-          <button
-            type="button"
-            className="sidebar-mini"
-            onClick={selectAllDocs}
-            title="Clear selection = search everything"
-          >
-            {scopeAll ? "All" : "Use all"}
-          </button>
+          <div className="sidebar-label-actions">
+            {!!documents.length && (
+              <button
+                type="button"
+                className="sidebar-mini danger"
+                onClick={() => void deleteAllDocuments()}
+                title="Delete all indexed documents"
+              >
+                Delete all
+              </button>
+            )}
+            <button
+              type="button"
+              className="sidebar-mini"
+              onClick={selectAllDocs}
+              title="Clear selection = search everything"
+            >
+              {scopeAll ? "All" : "Use all"}
+            </button>
+          </div>
         </div>
         <p className="sidebar-hint">Click to multi-select. Empty = all docs.</p>
 
@@ -543,12 +597,6 @@ export function ChatWorkspace() {
                   type="button"
                   className="doc-card-main"
                   onClick={() => toggleDoc(doc.id)}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    if (window.confirm(`Delete ${doc.filename}?`)) {
-                      void deleteDocument(doc.id);
-                    }
-                  }}
                 >
                   <span className="doc-check">
                     {selected ? "✓" : scopeAll ? "•" : ""}
@@ -580,6 +628,33 @@ export function ChatWorkspace() {
                     </option>
                   ))}
                 </select>
+                <button
+                  type="button"
+                  className="doc-delete"
+                  title={`Delete ${doc.filename}`}
+                  aria-label={`Delete ${doc.filename}`}
+                  onClick={() => {
+                    if (window.confirm(`Delete ${doc.filename}?`)) {
+                      void deleteDocument(doc.id);
+                    }
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+                    <path
+                      d="M9 3h6m-9 4h12m-1.5 0-.7 12.1a2 2 0 0 1-2 1.9H9.2a2 2 0 0 1-2-1.9L6.5 7"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M10 11v6M14 11v6"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                </button>
               </div>
             );
           })}
@@ -777,6 +852,37 @@ export function ChatWorkspace() {
             void sendMessage(input);
           }}
         >
+          {toast && (
+            <div
+              key={toast.id}
+              className="kai-toast"
+              role="status"
+              aria-live="polite"
+            >
+              <span className="kai-toast-dot" aria-hidden />
+              <p>{toast.message}</p>
+              {toast.actionLabel && (
+                <button
+                  type="button"
+                  className="kai-toast-action"
+                  onClick={() => {
+                    dismissToast();
+                    fileRef.current?.click();
+                  }}
+                >
+                  {toast.actionLabel}
+                </button>
+              )}
+              <button
+                type="button"
+                className="kai-toast-close"
+                aria-label="Dismiss"
+                onClick={dismissToast}
+              >
+                ×
+              </button>
+            </div>
+          )}
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
